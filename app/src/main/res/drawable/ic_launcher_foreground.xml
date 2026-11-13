@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer studio ring -->
+    <path
+        android:fillColor="#1A2933"
+        android:pathData="M54,23 A31,31 0 1,0 54,85 A31,31 0 1,0 54,23 Z"
+        android:strokeWidth="2.5"
+        android:strokeColor="#31C3A2" />
+    <!-- Top aperture blade -->
+    <path
+        android:fillColor="#31C3A2"
+        android:pathData="M54,29 C61.5,29 67.5,35 67.5,42.5 C67.5,46.2 66,49.5 63.5,52 C59.8,48.2 54.4,46.5 49,47.5 C46.8,44 46.5,39.4 48.5,35.6 C50.1,32.5 52,29 54,29 Z" />
+    <!-- Bottom-left aperture blade -->
+    <path
+        android:fillColor="#80F5D2"
+        android:pathData="M32.3,66.5 C28.6,60 30.8,51.8 37.3,48 C40.5,46.2 44.2,45.8 47.6,46.8 C46.2,51.9 47.4,57.4 51,61.6 C49,65.2 45.2,67.8 40.9,68 C37.4,68.2 34.1,67.7 32.3,66.5 Z" />
+    <!-- Bottom-right aperture blade -->
+    <path
+        android:fillColor="#249D84"
+        android:pathData="M75.7,66.5 C71.9,73 63.7,75.2 57.2,71.4 C54,69.6 51.8,66.6 51,63.1 C56.1,61.8 60.4,58 62.2,52.8 C66.3,52.7 70.4,54.7 72.8,58.3 C74.7,61.3 76.7,64.8 75.7,66.5 Z" />
+    <!-- Live broadcast core dot -->
+    <path
+        android:fillColor="#FF4557"
+        android:pathData="M54,48.5 A5.5,5.5 0 1,0 54,59.5 A5.5,5.5 0 1,0 54,48.5 Z" />
+</vector>

@@ -1,0 +1,6 @@
+{
+  "name": "mobileLabs",
+  "description": "Free mobile broadcast studio recreating OBS and Streamlabs Desktop with dual 16:9 and 9:16 output, multistream RTMP, live audio mixer, scenes, sources, and local MP4 recording.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
