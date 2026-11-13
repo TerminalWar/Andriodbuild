@@ -371,12 +371,58 @@ class StudioRepository(
         dao.updateScene(scene.copy(name = newName).toEntity())
     }
 
+    suspend fun updateSceneBackdrop(scene: StudioScene, colorHex: Long) {
+        dao.updateScene(scene.copy(backdropHex = colorHex).toEntity())
+    }
+
+    suspend fun duplicateScene(scene: StudioScene, newOrder: Int): Long {
+        val newSceneId = dao.insertScene(
+            StudioSceneEntity(
+                collectionId = scene.collectionId,
+                name = "${scene.name} (Copy)",
+                sortOrder = newOrder,
+                backdropHex = scene.backdropHex
+            )
+        )
+        val sources = dao.getSourcesOnce(scene.id)
+        val idMap = mutableMapOf<Long, Long>()
+        sources.filter { it.parentFolderId == null }.forEach { src ->
+            val newId = dao.insertSource(src.copy(id = 0, sceneId = newSceneId))
+            idMap[src.id] = newId
+        }
+        sources.filter { it.parentFolderId != null }.forEach { src ->
+            val newParent = idMap[src.parentFolderId]
+            dao.insertSource(src.copy(id = 0, sceneId = newSceneId, parentFolderId = newParent))
+        }
+        return newSceneId
+    }
+
     suspend fun deleteScene(sceneId: Long) {
         dao.deleteSourcesForScene(sceneId)
         dao.deleteScene(sceneId)
     }
 
     suspend fun addSource(source: StudioSource): Long = dao.insertSource(source.toEntity())
+
+    suspend fun duplicateSource(source: StudioSource): Long {
+        val shiftedH = source.hRect.copy(
+            x = (source.hRect.x + 0.03f).coerceIn(0f, (1f - source.hRect.width).coerceAtLeast(0f)),
+            y = (source.hRect.y + 0.03f).coerceIn(0f, (1f - source.hRect.height).coerceAtLeast(0f))
+        )
+        val shiftedV = source.vRect.copy(
+            x = (source.vRect.x + 0.03f).coerceIn(0f, (1f - source.vRect.width).coerceAtLeast(0f)),
+            y = (source.vRect.y + 0.03f).coerceIn(0f, (1f - source.vRect.height).coerceAtLeast(0f))
+        )
+        return dao.insertSource(
+            source.copy(
+                id = 0,
+                name = "${source.name} Copy",
+                hRect = shiftedH,
+                vRect = shiftedV,
+                sortOrder = source.sortOrder + 1
+            ).toEntity()
+        )
+    }
 
     suspend fun updateSource(source: StudioSource) = dao.updateSource(source.toEntity())
 
@@ -410,4 +456,95 @@ class StudioRepository(
 
     suspend fun updatePreferences(transform: (StudioPreferences) -> StudioPreferences) =
         prefsRepo.updatePreferences(transform)
+
+    suspend fun exportSceneCollectionJson(collectionId: Long, collectionName: String, scenes: List<StudioScene>): String {
+        val root = org.json.JSONObject()
+        root.put("name", collectionName)
+        root.put("version", 3)
+        val scenesArr = org.json.JSONArray()
+        for (sc in scenes) {
+            val scObj = org.json.JSONObject()
+            scObj.put("name", sc.name)
+            scObj.put("sortOrder", sc.sortOrder)
+            scObj.put("backdropHex", sc.backdropHex)
+            val srcArr = org.json.JSONArray()
+            for (s in dao.getSourcesOnce(sc.id)) {
+                srcArr.put(org.json.JSONObject().apply {
+                    put("name", s.name)
+                    put("typeName", s.typeName)
+                    put("sortOrder", s.sortOrder)
+                    put("isVisibleHorizontal", s.isVisibleHorizontal)
+                    put("isVisibleVertical", s.isVisibleVertical)
+                    put("hX", s.hX.toDouble()); put("hY", s.hY.toDouble())
+                    put("hW", s.hW.toDouble()); put("hH", s.hH.toDouble())
+                    put("vX", s.vX.toDouble()); put("vY", s.vY.toDouble())
+                    put("vW", s.vW.toDouble()); put("vH", s.vH.toDouble())
+                    put("textContent", s.textContent)
+                    put("accentColorHex", s.accentColorHex)
+                    put("cameraFacingFront", s.cameraFacingFront)
+                    put("cameraMirror", s.cameraMirror)
+                    put("cameraZoom", s.cameraZoom.toDouble())
+                    put("cropToFill", s.cropToFill)
+                    put("opacity", s.opacity.toDouble())
+                    put("cornerRadiusDp", s.cornerRadiusDp)
+                    put("chromaKeyEnabled", s.chromaKeyEnabled)
+                })
+            }
+            scObj.put("sources", srcArr)
+            scenesArr.put(scObj)
+        }
+        root.put("scenes", scenesArr)
+        return root.toString(2)
+    }
+
+    suspend fun importSceneCollectionJson(rawJson: String): Result<Long> = runCatching {
+        val root = org.json.JSONObject(rawJson)
+        val baseName = root.optString("name", "Imported Scene").ifBlank { "Imported Scene" }
+        val colId = dao.insertCollection(SceneCollectionEntity(name = "$baseName (Imported)", isActive = true))
+        dao.setActiveCollection(colId)
+        val scenesArr = root.getJSONArray("scenes")
+        for (i in 0 until scenesArr.length()) {
+            val scObj = scenesArr.getJSONObject(i)
+            val sceneId = dao.insertScene(
+                StudioSceneEntity(
+                    collectionId = colId,
+                    name = scObj.optString("name", "Scene ${i + 1}"),
+                    sortOrder = scObj.optInt("sortOrder", i),
+                    backdropHex = scObj.optLong("backdropHex", 0xFF0C1520)
+                )
+            )
+            val srcArr = scObj.optJSONArray("sources") ?: continue
+            for (j in 0 until srcArr.length()) {
+                val s = srcArr.getJSONObject(j)
+                dao.insertSource(
+                    StudioSourceEntity(
+                        sceneId = sceneId,
+                        name = s.optString("name", "Source"),
+                        typeName = s.optString("typeName", SourceType.TEXT_BANNER.name),
+                        sortOrder = s.optInt("sortOrder", j),
+                        isVisibleHorizontal = s.optBoolean("isVisibleHorizontal", true),
+                        isVisibleVertical = s.optBoolean("isVisibleVertical", true),
+                        hX = s.optDouble("hX", 0.0).toFloat(),
+                        hY = s.optDouble("hY", 0.0).toFloat(),
+                        hW = s.optDouble("hW", 1.0).toFloat(),
+                        hH = s.optDouble("hH", 1.0).toFloat(),
+                        vX = s.optDouble("vX", 0.0).toFloat(),
+                        vY = s.optDouble("vY", 0.0).toFloat(),
+                        vW = s.optDouble("vW", 1.0).toFloat(),
+                        vH = s.optDouble("vH", 1.0).toFloat(),
+                        textContent = s.optString("textContent", ""),
+                        accentColorHex = s.optLong("accentColorHex", 0xFF31C3A2),
+                        cameraFacingFront = s.optBoolean("cameraFacingFront", true),
+                        cameraMirror = s.optBoolean("cameraMirror", true),
+                        cameraZoom = s.optDouble("cameraZoom", 1.0).toFloat(),
+                        cropToFill = s.optBoolean("cropToFill", true),
+                        opacity = s.optDouble("opacity", 1.0).toFloat(),
+                        cornerRadiusDp = s.optInt("cornerRadiusDp", 10),
+                        chromaKeyEnabled = s.optBoolean("chromaKeyEnabled", false)
+                    )
+                )
+            }
+        }
+        colId
+    }
 }

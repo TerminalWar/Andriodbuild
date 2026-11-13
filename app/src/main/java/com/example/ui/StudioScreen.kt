@@ -7,59 +7,25 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Cast
-import androidx.compose.material.icons.rounded.CastConnected
-import androidx.compose.material.icons.rounded.ChatBubbleOutline
-import androidx.compose.material.icons.rounded.DesktopWindows
-import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.History
-import androidx.compose.material.icons.rounded.Keyboard
-import androidx.compose.material.icons.rounded.Layers
-import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.Podcasts
-import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material.icons.rounded.Smartphone
-import androidx.compose.material.icons.rounded.Speed
-import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.automirrored.rounded.ViewQuilt
-import androidx.compose.material.icons.rounded.VideoLibrary
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -68,13 +34,9 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -84,11 +46,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -98,38 +56,34 @@ import com.example.data.model.BroadcastTelemetry
 import com.example.data.model.OutputOrientation
 import com.example.data.model.StreamConnectionState
 import com.example.data.model.StudioPreferences
+import com.example.data.model.StudioScene
 import com.example.data.model.StudioSource
+import com.example.streaming.MediaProjectionHolder
 import com.example.ui.components.AddSourceDialog
 import com.example.ui.components.AudioChannelSettingsDialog
 import com.example.ui.components.AudioMixerDock
+import com.example.ui.components.BottomBroadcastControlBar
+import com.example.ui.components.BroadcastLogsDialog
 import com.example.ui.components.CanvasPreviewStage
 import com.example.ui.components.ChatDock
+import com.example.ui.components.CompactTopHeader
+import com.example.ui.components.ConfirmEndStreamDialog
 import com.example.ui.components.DestinationsSheetDialog
 import com.example.ui.components.KeyboardShortcutsDialog
+import com.example.ui.components.MobileDockTabStrip
+import com.example.ui.components.MobileStudioToolsGrid
 import com.example.ui.components.OverlayThemesDialog
 import com.example.ui.components.RecordingsClipsDialog
+import com.example.ui.components.SceneCollectionBackupDialog
 import com.example.ui.components.ScenesDock
 import com.example.ui.components.SourcePropertiesDialog
 import com.example.ui.components.SourcesDock
+import com.example.ui.components.StudioNavigationRail
 import com.example.ui.components.StudioSettingsDialog
+import com.example.ui.components.StudioTopOutputBar
 import com.example.ui.components.TextInputDialog
-import com.example.ui.components.formatDuration
-import com.example.ui.theme.LiveCrimson
-import com.example.ui.theme.LiveCrimsonBright
-import com.example.ui.theme.MintAccent
-import com.example.ui.theme.MintAccentBright
-import com.example.ui.theme.RecordAmber
-import com.example.ui.theme.StudioBorder
-import com.example.ui.theme.StudioDock
-import com.example.ui.theme.StudioElevated
-import com.example.ui.theme.StudioHeader
-import com.example.ui.theme.StudioRail
 import com.example.ui.theme.StudioVoid
-import com.example.ui.theme.TextMuted
-import com.example.ui.theme.TextPrimary
-import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.StudioViewModel
-import java.util.Locale
 
 @Composable
 fun StudioScreen(
@@ -155,6 +109,7 @@ fun StudioScreen(
     val clips by viewModel.clips.collectAsStateWithLifecycle()
     val preferences by viewModel.preferences.collectAsStateWithLifecycle()
     val chatMessages by viewModel.chatMessages.collectAsStateWithLifecycle()
+    val pinnedChatMessage by viewModel.pinnedChatMessage.collectAsStateWithLifecycle()
     val chatStatus by viewModel.chatStatus.collectAsStateWithLifecycle()
     val activeAlert by viewModel.activeAlert.collectAsStateWithLifecycle()
     val donationGoal by viewModel.donationGoal.collectAsStateWithLifecycle()
@@ -163,8 +118,11 @@ fun StudioScreen(
     val hasAudioPermission by viewModel.hasAudioPermission.collectAsStateWithLifecycle()
     val previewTick by viewModel.previewTick.collectAsStateWithLifecycle()
     val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
+    val streamMarkers by viewModel.streamMarkers.collectAsStateWithLifecycle()
+    val broadcastLogs by viewModel.broadcastLogs.collectAsStateWithLifecycle()
 
     var showAddSceneDialog by remember { mutableStateOf(false) }
+    var renamingScene by remember { mutableStateOf<StudioScene?>(null) }
     var showAddCollectionDialog by remember { mutableStateOf(false) }
     var showAddSourceDialog by remember { mutableStateOf(false) }
     var editingSource by remember { mutableStateOf<StudioSource?>(null) }
@@ -175,8 +133,17 @@ fun StudioScreen(
     var showClipsDialog by remember { mutableStateOf(false) }
     var showEditTitleDialog by remember { mutableStateOf(false) }
     var showKeyboardShortcutsDialog by remember { mutableStateOf(false) }
+    var showLogsDialog by remember { mutableStateOf(false) }
+    var showBackupDialog by remember { mutableStateOf(false) }
+    var exportedBackupJson by remember { mutableStateOf("") }
+    var showConfirmEndStream by remember { mutableStateOf(false) }
+    var isFullscreenPreview by remember { mutableStateOf(false) }
     var showChatPaneDesktop by remember { mutableStateOf(true) }
     var selectedCompactTab by remember { mutableIntStateOf(0) } // 0=Mixer, 1=Scenes, 2=Sources, 3=Chat, 4=Tools
+
+    BackHandler(enabled = isFullscreenPreview) {
+        isFullscreenPreview = false
+    }
 
     // Keep Tablet / Phone screen awake during live broadcasts
     DisposableEffect(preferences.keepScreenAwake, telemetry.connectionState, telemetry.isRecording) {
@@ -233,6 +200,17 @@ fun StudioScreen(
         }
     }
 
+    val handleToggleLive = {
+        val isActiveLive = telemetry.connectionState == StreamConnectionState.LIVE ||
+            telemetry.connectionState == StreamConnectionState.CONNECTING ||
+            telemetry.connectionState == StreamConnectionState.RECONNECTING
+        if (isActiveLive && preferences.confirmStopStream) {
+            showConfirmEndStream = true
+        } else {
+            viewModel.toggleLiveStream()
+        }
+    }
+
     LaunchedEffect(Unit) {
         val cam = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val mic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -252,6 +230,7 @@ fun StudioScreen(
     val activeSourcesForDock = if (preferences.studioModeEnabled) previewSources else programSources
     val activeSceneForDock = if (preferences.studioModeEnabled) previewScene else programScene
     val screenBitmap = remember(previewTick) { viewModel.getLatestScreenBitmap() }
+    val cameraBitmap = remember(previewTick) { MediaProjectionHolder.getLatestCameraBitmap() }
 
     // Hardware Keyboard Shortcuts Handler (OBS Tablet / Phone Keyboard Compatibility)
     val keyboardModifier = Modifier
@@ -271,8 +250,9 @@ fun StudioScreen(
                 event.key == Key.F6 || (ctrl && event.key == Key.Six) -> { viewModel.switchSceneByIndex(5); true }
                 event.key == Key.F7 || (ctrl && event.key == Key.Seven) -> { viewModel.switchSceneByIndex(6); true }
 
-                // Broadcast Controls
-                event.key == Key.F9 || (ctrl && event.key == Key.L) -> { viewModel.toggleLiveStream(); true }
+                // Stream Marker & Broadcast Controls
+                event.key == Key.F8 -> { viewModel.dropStreamMarker(); true }
+                event.key == Key.F9 || (ctrl && event.key == Key.L) -> { handleToggleLive(); true }
                 event.key == Key.F10 || (ctrl && event.key == Key.R) -> { viewModel.toggleRecording(); true }
                 event.key == Key.F11 || (ctrl && event.key == Key.B) -> { viewModel.saveReplayBufferClip(); true }
                 event.key == Key.F12 || (ctrl && event.key == Key.Slash) -> { showKeyboardShortcutsDialog = !showKeyboardShortcutsDialog; true }
@@ -283,31 +263,36 @@ fun StudioScreen(
                 ctrl && event.key == Key.P -> { viewModel.togglePrivacyShield(); true }
                 ctrl && event.key == Key.T -> { viewModel.triggerTestWidgets(); true }
                 ctrl && shift && event.key == Key.S -> { viewModel.toggleStudioMode(); true }
+                ctrl && shift && event.key == Key.F -> { isFullscreenPreview = !isFullscreenPreview; true }
 
                 // Studio Mode Transition
                 event.key == Key.Spacebar && preferences.studioModeEnabled && selectedSourceId == null -> {
                     viewModel.transitionPreviewToProgram(); true
                 }
 
-                // Selected Source Precision Nudging & Delete
+                // Selected Source Precision Nudging, Resizing (Ctrl+Arrows) & Delete
                 selectedSourceId != null && event.key == Key.DirectionLeft -> {
-                    viewModel.nudgeSelectedSource(if (shift) -0.05f else -0.01f, 0f); true
+                    viewModel.nudgeSelectedSource(if (shift) -0.05f else -0.01f, 0f, resize = ctrl); true
                 }
                 selectedSourceId != null && event.key == Key.DirectionRight -> {
-                    viewModel.nudgeSelectedSource(if (shift) 0.05f else 0.01f, 0f); true
+                    viewModel.nudgeSelectedSource(if (shift) 0.05f else 0.01f, 0f, resize = ctrl); true
                 }
                 selectedSourceId != null && event.key == Key.DirectionUp -> {
-                    viewModel.nudgeSelectedSource(0f, if (shift) -0.05f else -0.01f); true
+                    viewModel.nudgeSelectedSource(0f, if (shift) -0.05f else -0.01f, resize = ctrl); true
                 }
                 selectedSourceId != null && event.key == Key.DirectionDown -> {
-                    viewModel.nudgeSelectedSource(0f, if (shift) 0.05f else 0.01f); true
+                    viewModel.nudgeSelectedSource(0f, if (shift) 0.05f else 0.01f, resize = ctrl); true
                 }
                 selectedSourceId != null && event.key == Key.Delete -> {
                     viewModel.deleteSelectedSource(); true
                 }
                 event.key == Key.Escape -> {
-                    viewModel.selectSource(null)
-                    focusManager.clearFocus()
+                    if (isFullscreenPreview) {
+                        isFullscreenPreview = false
+                    } else {
+                        viewModel.selectSource(null)
+                        focusManager.clearFocus()
+                    }
                     true
                 }
                 else -> false
@@ -329,7 +314,62 @@ fun StudioScreen(
             val isTabletDesktop = maxWidth >= 820.dp && maxHeight >= 500.dp
             val isCompactLandscape = maxWidth >= 600.dp && !isTabletDesktop
 
-            when {
+            if (isFullscreenPreview) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .navigationBarsPadding()
+                ) {
+                    CanvasPreviewStage(
+                        horizontalEnabled = preferences.horizontalEnabled,
+                        verticalEnabled = preferences.verticalEnabled,
+                        studioModeEnabled = preferences.studioModeEnabled,
+                        privacyShieldActive = preferences.privacyShieldActive,
+                        isFullscreenPreview = true,
+                        editingOrientation = editingOrientation,
+                        programScene = programScene,
+                        previewScene = previewScene,
+                        programSources = programSources,
+                        previewSources = previewSources,
+                        selectedSourceId = selectedSourceId,
+                        activeTransition = selectedTransition,
+                        activeAlert = activeAlert,
+                        donationGoal = donationGoal,
+                        recentChat = chatMessages,
+                        pinnedChatMessage = pinnedChatMessage,
+                        liveElapsedSeconds = telemetry.elapsedLiveSeconds,
+                        currentFps = telemetry.currentFps,
+                        hasCameraPermission = hasCameraPermission,
+                        isScreenCaptureActive = telemetry.isScreenCaptureActive,
+                        screenBitmap = screenBitmap,
+                        cameraBitmap = cameraBitmap,
+                        getVideoOverlayBitmap = { viewModel.getVideoOverlayBitmap(it) },
+                        onSelectOrientation = { viewModel.setEditingOrientation(it) },
+                        onSelectSource = { viewModel.selectSource(it) },
+                        onMoveSource = { srcId, orient, dx, dy -> viewModel.moveSourceRect(srcId, orient, dx, dy) },
+                        onResizeSource = { srcId, orient, dw, dh -> viewModel.resizeSourceRect(srcId, orient, dw, dh) },
+                        onCommitTransform = { srcId, orient -> viewModel.commitSourceTransform(srcId, orient) },
+                        onApplyTransformPreset = { src, orient, preset -> viewModel.applyTransformPreset(src, orient, preset) },
+                        onToggleSourceLock = { viewModel.toggleSourceLock(it) },
+                        onToggleCameraFacing = { viewModel.toggleCameraFacing(it) },
+                        onEditSourceProperties = { editingSource = it },
+                        onDeleteSource = { viewModel.deleteSource(it) },
+                        onTransitionToProgram = { viewModel.transitionPreviewToProgram() },
+                        onToggleFullscreenPreview = { isFullscreenPreview = false },
+                        onRequestCameraPermission = requestStudioPermissions,
+                        onRequestScreenCapture = launchScreenCapture,
+                        modifier = Modifier.weight(1f)
+                    )
+                    BottomBroadcastControlBar(
+                        telemetry = telemetry,
+                        isCompact = !isTabletDesktop,
+                        onTestWidgets = { viewModel.triggerTestWidgets() },
+                        onToggleRecord = { viewModel.toggleRecording() },
+                        onSaveReplay = { viewModel.saveReplayBufferClip() },
+                        onToggleLive = handleToggleLive
+                    )
+                }
+            } else when {
                 isTabletDesktop -> {
                     // 1-to-1 Desktop OBS / Streamlabs Layout (Tablets & Large Landscape)
                     Row(
@@ -349,6 +389,7 @@ fun StudioScreen(
                             onOpenClips = { showClipsDialog = true },
                             onToggleScreenCapture = launchScreenCapture,
                             onToggleChatPane = { showChatPaneDesktop = !showChatPaneDesktop },
+                            onOpenLogs = { showLogsDialog = true },
                             onOpenKeyboardShortcuts = { showKeyboardShortcutsDialog = true },
                             onOpenSettings = { showSettingsDialog = true }
                         )
@@ -358,10 +399,12 @@ fun StudioScreen(
                                 Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
                                     StudioTopOutputBar(
                                         preferences = preferences,
+                                        telemetry = telemetry,
                                         onToggleOrientation = { viewModel.toggleDualOutput(it) },
                                         onOpenDualOutputManager = { showDestinationsDialog = true },
                                         onToggleStudioMode = { viewModel.toggleStudioMode() },
-                                        onTogglePrivacyShield = { viewModel.togglePrivacyShield() }
+                                        onTogglePrivacyShield = { viewModel.togglePrivacyShield() },
+                                        onOpenLogs = { showLogsDialog = true }
                                     )
 
                                     CanvasPreviewStage(
@@ -369,6 +412,7 @@ fun StudioScreen(
                                         verticalEnabled = preferences.verticalEnabled,
                                         studioModeEnabled = preferences.studioModeEnabled,
                                         privacyShieldActive = preferences.privacyShieldActive,
+                                        isFullscreenPreview = false,
                                         editingOrientation = editingOrientation,
                                         programScene = programScene,
                                         previewScene = previewScene,
@@ -379,15 +423,26 @@ fun StudioScreen(
                                         activeAlert = activeAlert,
                                         donationGoal = donationGoal,
                                         recentChat = chatMessages,
+                                        pinnedChatMessage = pinnedChatMessage,
+                                        liveElapsedSeconds = telemetry.elapsedLiveSeconds,
+                                        currentFps = telemetry.currentFps,
                                         hasCameraPermission = hasCameraPermission,
                                         isScreenCaptureActive = telemetry.isScreenCaptureActive,
                                         screenBitmap = screenBitmap,
+                                        cameraBitmap = cameraBitmap,
                                         getVideoOverlayBitmap = { viewModel.getVideoOverlayBitmap(it) },
                                         onSelectOrientation = { viewModel.setEditingOrientation(it) },
                                         onSelectSource = { viewModel.selectSource(it) },
-                                        onMoveSource = { src, orient, dx, dy -> viewModel.moveSourceRect(src, orient, dx, dy) },
-                                        onResizeSource = { src, orient, dw, dh -> viewModel.resizeSourceRect(src, orient, dw, dh) },
+                                        onMoveSource = { srcId, orient, dx, dy -> viewModel.moveSourceRect(srcId, orient, dx, dy) },
+                                        onResizeSource = { srcId, orient, dw, dh -> viewModel.resizeSourceRect(srcId, orient, dw, dh) },
+                                        onCommitTransform = { srcId, orient -> viewModel.commitSourceTransform(srcId, orient) },
+                                        onApplyTransformPreset = { src, orient, preset -> viewModel.applyTransformPreset(src, orient, preset) },
+                                        onToggleSourceLock = { viewModel.toggleSourceLock(it) },
+                                        onToggleCameraFacing = { viewModel.toggleCameraFacing(it) },
+                                        onEditSourceProperties = { editingSource = it },
+                                        onDeleteSource = { viewModel.deleteSource(it) },
                                         onTransitionToProgram = { viewModel.transitionPreviewToProgram() },
+                                        onToggleFullscreenPreview = { isFullscreenPreview = true },
                                         onRequestCameraPermission = requestStudioPermissions,
                                         onRequestScreenCapture = launchScreenCapture,
                                         modifier = Modifier.weight(1.12f)
@@ -403,8 +458,11 @@ fun StudioScreen(
                                             onAddCollectionClick = { showAddCollectionDialog = true },
                                             onSelectScene = { viewModel.selectScene(it) },
                                             onAddSceneClick = { showAddSceneDialog = true },
+                                            onRenameSceneClick = { renamingScene = it },
+                                            onDuplicateScene = { viewModel.duplicateScene(it) },
                                             onDeleteScene = { viewModel.deleteScene(it) },
                                             onSelectTransition = { viewModel.selectTransition(it) },
+                                            onDropMarker = { viewModel.dropStreamMarker() },
                                             modifier = Modifier.weight(0.95f)
                                         )
                                         SourcesDock(
@@ -415,6 +473,7 @@ fun StudioScreen(
                                             onAddSourceClick = { showAddSourceDialog = true },
                                             onToggleVisibility = { src, orient -> viewModel.toggleSourceVisibility(src, orient) },
                                             onToggleLock = { viewModel.toggleSourceLock(it) },
+                                            onDuplicateSource = { viewModel.duplicateSource(it) },
                                             onMoveSourceOrder = { id, up -> viewModel.moveSourceLayer(id, up) },
                                             onEditSourceProperties = { editingSource = it },
                                             modifier = Modifier.weight(1.05f)
@@ -440,9 +499,11 @@ fun StudioScreen(
                                         twitchChannel = preferences.twitchChannel,
                                         chatStatus = chatStatus,
                                         messages = chatMessages,
+                                        pinnedMessage = pinnedChatMessage,
                                         onEditTitleClick = { showEditTitleDialog = true },
                                         onConnectTwitchChannel = { viewModel.connectTwitchChat(it) },
                                         onSendLocalMessage = { viewModel.addLocalChatMessage("Host", it) },
+                                        onPinMessage = { viewModel.pinChatMessage(it) },
                                         modifier = Modifier.width(276.dp).fillMaxHeight()
                                     )
                                 }
@@ -454,7 +515,7 @@ fun StudioScreen(
                                 onTestWidgets = { viewModel.triggerTestWidgets() },
                                 onToggleRecord = { viewModel.toggleRecording() },
                                 onSaveReplay = { viewModel.saveReplayBufferClip() },
-                                onToggleLive = { viewModel.toggleLiveStream() }
+                                onToggleLive = handleToggleLive
                             )
                         }
                     }
@@ -479,6 +540,7 @@ fun StudioScreen(
                             onOpenClips = { showClipsDialog = true },
                             onToggleScreenCapture = launchScreenCapture,
                             onToggleChatPane = { selectedCompactTab = 3 },
+                            onOpenLogs = { showLogsDialog = true },
                             onOpenKeyboardShortcuts = { showKeyboardShortcutsDialog = true },
                             onOpenSettings = { showSettingsDialog = true }
                         )
@@ -505,6 +567,7 @@ fun StudioScreen(
                                                 if (!preferences.verticalEnabled) viewModel.toggleDualOutput(OutputOrientation.VERTICAL)
                                             }
                                         },
+                                        onOpenLogs = { showLogsDialog = true },
                                         onOpenDestinations = { showDestinationsDialog = true },
                                         onOpenSettings = { showSettingsDialog = true }
                                     )
@@ -513,6 +576,7 @@ fun StudioScreen(
                                         verticalEnabled = preferences.verticalEnabled,
                                         studioModeEnabled = preferences.studioModeEnabled,
                                         privacyShieldActive = preferences.privacyShieldActive,
+                                        isFullscreenPreview = false,
                                         editingOrientation = editingOrientation,
                                         programScene = programScene,
                                         previewScene = previewScene,
@@ -523,15 +587,26 @@ fun StudioScreen(
                                         activeAlert = activeAlert,
                                         donationGoal = donationGoal,
                                         recentChat = chatMessages,
+                                        pinnedChatMessage = pinnedChatMessage,
+                                        liveElapsedSeconds = telemetry.elapsedLiveSeconds,
+                                        currentFps = telemetry.currentFps,
                                         hasCameraPermission = hasCameraPermission,
                                         isScreenCaptureActive = telemetry.isScreenCaptureActive,
                                         screenBitmap = screenBitmap,
+                                        cameraBitmap = cameraBitmap,
                                         getVideoOverlayBitmap = { viewModel.getVideoOverlayBitmap(it) },
                                         onSelectOrientation = { viewModel.setEditingOrientation(it) },
                                         onSelectSource = { viewModel.selectSource(it) },
-                                        onMoveSource = { src, orient, dx, dy -> viewModel.moveSourceRect(src, orient, dx, dy) },
-                                        onResizeSource = { src, orient, dw, dh -> viewModel.resizeSourceRect(src, orient, dw, dh) },
+                                        onMoveSource = { srcId, orient, dx, dy -> viewModel.moveSourceRect(srcId, orient, dx, dy) },
+                                        onResizeSource = { srcId, orient, dw, dh -> viewModel.resizeSourceRect(srcId, orient, dw, dh) },
+                                        onCommitTransform = { srcId, orient -> viewModel.commitSourceTransform(srcId, orient) },
+                                        onApplyTransformPreset = { src, orient, preset -> viewModel.applyTransformPreset(src, orient, preset) },
+                                        onToggleSourceLock = { viewModel.toggleSourceLock(it) },
+                                        onToggleCameraFacing = { viewModel.toggleCameraFacing(it) },
+                                        onEditSourceProperties = { editingSource = it },
+                                        onDeleteSource = { viewModel.deleteSource(it) },
                                         onTransitionToProgram = { viewModel.transitionPreviewToProgram() },
+                                        onToggleFullscreenPreview = { isFullscreenPreview = true },
                                         onRequestCameraPermission = requestStudioPermissions,
                                         onRequestScreenCapture = launchScreenCapture,
                                         modifier = Modifier.weight(1f)
@@ -561,19 +636,29 @@ fun StudioScreen(
                                             telemetry = telemetry,
                                             chatStatus = chatStatus,
                                             chatMessages = chatMessages,
+                                            pinnedMessage = pinnedChatMessage,
                                             destinationsCount = destinations.count { it.isEnabled },
                                             clipsCount = clips.size,
                                             onRequestAudioPermission = requestStudioPermissions,
                                             onAddCollection = { showAddCollectionDialog = true },
                                             onAddScene = { showAddSceneDialog = true },
+                                            onRenameScene = { renamingScene = it },
                                             onAddSource = { showAddSourceDialog = true },
                                             onEditSource = { editingSource = it },
                                             onEditAudioChannel = { editingAudioChannel = it },
                                             onEditTitle = { showEditTitleDialog = true },
                                             onToggleScreenCapture = launchScreenCapture,
+                                            onToggleFullscreenPreview = { isFullscreenPreview = true },
                                             onOpenDestinations = { showDestinationsDialog = true },
                                             onOpenThemes = { showThemesDialog = true },
                                             onOpenClips = { showClipsDialog = true },
+                                            onOpenLogs = { showLogsDialog = true },
+                                            onOpenBackup = {
+                                                viewModel.exportCollectionJson { json ->
+                                                    exportedBackupJson = json
+                                                    showBackupDialog = true
+                                                }
+                                            },
                                             onOpenShortcuts = { showKeyboardShortcutsDialog = true },
                                             onOpenSettings = { showSettingsDialog = true }
                                         )
@@ -587,7 +672,7 @@ fun StudioScreen(
                                 onTestWidgets = { viewModel.triggerTestWidgets() },
                                 onToggleRecord = { viewModel.toggleRecording() },
                                 onSaveReplay = { viewModel.saveReplayBufferClip() },
-                                onToggleLive = { viewModel.toggleLiveStream() }
+                                onToggleLive = handleToggleLive
                             )
                         }
                     }
@@ -619,6 +704,7 @@ fun StudioScreen(
                                     if (!preferences.verticalEnabled) viewModel.toggleDualOutput(OutputOrientation.VERTICAL)
                                 }
                             },
+                            onOpenLogs = { showLogsDialog = true },
                             onOpenDestinations = { showDestinationsDialog = true },
                             onOpenSettings = { showSettingsDialog = true }
                         )
@@ -628,6 +714,7 @@ fun StudioScreen(
                             verticalEnabled = preferences.verticalEnabled,
                             studioModeEnabled = preferences.studioModeEnabled,
                             privacyShieldActive = preferences.privacyShieldActive,
+                            isFullscreenPreview = false,
                             editingOrientation = editingOrientation,
                             programScene = programScene,
                             previewScene = previewScene,
@@ -638,15 +725,26 @@ fun StudioScreen(
                             activeAlert = activeAlert,
                             donationGoal = donationGoal,
                             recentChat = chatMessages,
+                            pinnedChatMessage = pinnedChatMessage,
+                            liveElapsedSeconds = telemetry.elapsedLiveSeconds,
+                            currentFps = telemetry.currentFps,
                             hasCameraPermission = hasCameraPermission,
                             isScreenCaptureActive = telemetry.isScreenCaptureActive,
                             screenBitmap = screenBitmap,
+                            cameraBitmap = cameraBitmap,
                             getVideoOverlayBitmap = { viewModel.getVideoOverlayBitmap(it) },
                             onSelectOrientation = { viewModel.setEditingOrientation(it) },
                             onSelectSource = { viewModel.selectSource(it) },
-                            onMoveSource = { src, orient, dx, dy -> viewModel.moveSourceRect(src, orient, dx, dy) },
-                            onResizeSource = { src, orient, dw, dh -> viewModel.resizeSourceRect(src, orient, dw, dh) },
+                            onMoveSource = { srcId, orient, dx, dy -> viewModel.moveSourceRect(srcId, orient, dx, dy) },
+                            onResizeSource = { srcId, orient, dw, dh -> viewModel.resizeSourceRect(srcId, orient, dw, dh) },
+                            onCommitTransform = { srcId, orient -> viewModel.commitSourceTransform(srcId, orient) },
+                            onApplyTransformPreset = { src, orient, preset -> viewModel.applyTransformPreset(src, orient, preset) },
+                            onToggleSourceLock = { viewModel.toggleSourceLock(it) },
+                            onToggleCameraFacing = { viewModel.toggleCameraFacing(it) },
+                            onEditSourceProperties = { editingSource = it },
+                            onDeleteSource = { viewModel.deleteSource(it) },
                             onTransitionToProgram = { viewModel.transitionPreviewToProgram() },
+                            onToggleFullscreenPreview = { isFullscreenPreview = true },
                             onRequestCameraPermission = requestStudioPermissions,
                             onRequestScreenCapture = launchScreenCapture,
                             modifier = Modifier.weight(0.39f)
@@ -675,19 +773,29 @@ fun StudioScreen(
                                 telemetry = telemetry,
                                 chatStatus = chatStatus,
                                 chatMessages = chatMessages,
+                                pinnedMessage = pinnedChatMessage,
                                 destinationsCount = destinations.count { it.isEnabled },
                                 clipsCount = clips.size,
                                 onRequestAudioPermission = requestStudioPermissions,
                                 onAddCollection = { showAddCollectionDialog = true },
                                 onAddScene = { showAddSceneDialog = true },
+                                onRenameScene = { renamingScene = it },
                                 onAddSource = { showAddSourceDialog = true },
                                 onEditSource = { editingSource = it },
                                 onEditAudioChannel = { editingAudioChannel = it },
                                 onEditTitle = { showEditTitleDialog = true },
                                 onToggleScreenCapture = launchScreenCapture,
+                                onToggleFullscreenPreview = { isFullscreenPreview = true },
                                 onOpenDestinations = { showDestinationsDialog = true },
                                 onOpenThemes = { showThemesDialog = true },
                                 onOpenClips = { showClipsDialog = true },
+                                onOpenLogs = { showLogsDialog = true },
+                                onOpenBackup = {
+                                    viewModel.exportCollectionJson { json ->
+                                        exportedBackupJson = json
+                                        showBackupDialog = true
+                                    }
+                                },
                                 onOpenShortcuts = { showKeyboardShortcutsDialog = true },
                                 onOpenSettings = { showSettingsDialog = true }
                             )
@@ -699,7 +807,7 @@ fun StudioScreen(
                             onTestWidgets = { viewModel.triggerTestWidgets() },
                             onToggleRecord = { viewModel.toggleRecording() },
                             onSaveReplay = { viewModel.saveReplayBufferClip() },
-                            onToggleLive = { viewModel.toggleLiveStream() }
+                            onToggleLive = handleToggleLive
                         )
                     }
                 }
@@ -715,6 +823,17 @@ fun StudioScreen(
             confirmLabel = "Create",
             onDismiss = { showAddSceneDialog = false },
             onConfirm = { viewModel.addScene(it) }
+        )
+    }
+
+    renamingScene?.let { targetScene ->
+        TextInputDialog(
+            title = "Rename Scene",
+            label = "Scene Name",
+            initialValue = targetScene.name,
+            confirmLabel = "Rename",
+            onDismiss = { renamingScene = null },
+            onConfirm = { newName -> viewModel.renameScene(targetScene, newName) }
         )
     }
 
@@ -754,6 +873,7 @@ fun StudioScreen(
             orientation = editingOrientation,
             onDismiss = { editingSource = null },
             onSave = { viewModel.updateSource(it) },
+            onDuplicate = { viewModel.duplicateSource(it) },
             onDelete = { viewModel.deleteSource(it) }
         )
     }
@@ -773,13 +893,15 @@ fun StudioScreen(
             onDismiss = { showDestinationsDialog = false },
             onSaveDestination = { viewModel.saveDestination(it) },
             onToggleEnabled = { viewModel.toggleDestinationEnabled(it) },
-            onDeleteDestination = { viewModel.deleteDestination(it) }
+            onDeleteDestination = { viewModel.deleteDestination(it) },
+            onTestDestination = { url, key, onRes -> viewModel.testRtmpDestination(url, key, onRes) }
         )
     }
 
     if (showSettingsDialog) {
         StudioSettingsDialog(
             preferences = preferences,
+            freeStorageGb = telemetry.freeStorageGb,
             isScreenCaptureActive = telemetry.isScreenCaptureActive,
             onDismiss = { showSettingsDialog = false },
             onUpdatePreferences = { viewModel.updatePreferences(it) },
@@ -787,7 +909,44 @@ fun StudioScreen(
             onOpenKeyboardShortcuts = {
                 showSettingsDialog = false
                 showKeyboardShortcutsDialog = true
+            },
+            onOpenBackupDialog = {
+                showSettingsDialog = false
+                viewModel.exportCollectionJson { json ->
+                    exportedBackupJson = json
+                    showBackupDialog = true
+                }
+            },
+            onOpenLogsDialog = {
+                showSettingsDialog = false
+                showLogsDialog = true
             }
+        )
+    }
+
+    if (showLogsDialog) {
+        BroadcastLogsDialog(
+            logs = broadcastLogs,
+            markers = streamMarkers,
+            onDismiss = { showLogsDialog = false },
+            onClearLogs = { viewModel.clearLogs() },
+            onDropMarker = { viewModel.dropStreamMarker() }
+        )
+    }
+
+    if (showBackupDialog) {
+        SceneCollectionBackupDialog(
+            exportedJson = exportedBackupJson,
+            onDismiss = { showBackupDialog = false },
+            onImportJson = { viewModel.importCollectionJson(it) }
+        )
+    }
+
+    if (showConfirmEndStream) {
+        ConfirmEndStreamDialog(
+            elapsedSec = telemetry.elapsedLiveSeconds,
+            onDismiss = { showConfirmEndStream = false },
+            onConfirmEnd = { viewModel.toggleLiveStream() }
         )
     }
 
@@ -818,7 +977,7 @@ private fun CompactDockContent(
     selectedTab: Int,
     viewModel: StudioViewModel,
     collections: List<com.example.data.local.SceneCollectionEntity>,
-    scenes: List<com.example.data.model.StudioScene>,
+    scenes: List<StudioScene>,
     activeSceneId: Long?,
     activeSources: List<StudioSource>,
     selectedSourceId: Long?,
@@ -831,19 +990,24 @@ private fun CompactDockContent(
     telemetry: BroadcastTelemetry,
     chatStatus: com.example.streaming.ChatConnectionStatus,
     chatMessages: List<com.example.data.model.StreamChatMessage>,
+    pinnedMessage: com.example.data.model.StreamChatMessage?,
     destinationsCount: Int,
     clipsCount: Int,
     onRequestAudioPermission: () -> Unit,
     onAddCollection: () -> Unit,
     onAddScene: () -> Unit,
+    onRenameScene: (StudioScene) -> Unit,
     onAddSource: () -> Unit,
     onEditSource: (StudioSource) -> Unit,
     onEditAudioChannel: (AudioChannelConfig) -> Unit,
     onEditTitle: () -> Unit,
     onToggleScreenCapture: () -> Unit,
+    onToggleFullscreenPreview: () -> Unit,
     onOpenDestinations: () -> Unit,
     onOpenThemes: () -> Unit,
     onOpenClips: () -> Unit,
+    onOpenLogs: () -> Unit,
+    onOpenBackup: () -> Unit,
     onOpenShortcuts: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
@@ -867,8 +1031,11 @@ private fun CompactDockContent(
             onAddCollectionClick = onAddCollection,
             onSelectScene = { viewModel.selectScene(it) },
             onAddSceneClick = onAddScene,
+            onRenameSceneClick = onRenameScene,
+            onDuplicateScene = { viewModel.duplicateScene(it) },
             onDeleteScene = { viewModel.deleteScene(it) },
-            onSelectTransition = { viewModel.selectTransition(it) }
+            onSelectTransition = { viewModel.selectTransition(it) },
+            onDropMarker = { viewModel.dropStreamMarker() }
         )
         2 -> SourcesDock(
             sources = activeSources,
@@ -878,6 +1045,7 @@ private fun CompactDockContent(
             onAddSourceClick = onAddSource,
             onToggleVisibility = { src, orient -> viewModel.toggleSourceVisibility(src, orient) },
             onToggleLock = { viewModel.toggleSourceLock(it) },
+            onDuplicateSource = { viewModel.duplicateSource(it) },
             onMoveSourceOrder = { id, up -> viewModel.moveSourceLayer(id, up) },
             onEditSourceProperties = onEditSource
         )
@@ -887,9 +1055,11 @@ private fun CompactDockContent(
             twitchChannel = preferences.twitchChannel,
             chatStatus = chatStatus,
             messages = chatMessages,
+            pinnedMessage = pinnedMessage,
             onEditTitleClick = onEditTitle,
             onConnectTwitchChannel = { viewModel.connectTwitchChat(it) },
-            onSendLocalMessage = { viewModel.addLocalChatMessage("Host", it) }
+            onSendLocalMessage = { viewModel.addLocalChatMessage("Host", it) },
+            onPinMessage = { viewModel.pinChatMessage(it) }
         )
         else -> MobileStudioToolsGrid(
             studioModeEnabled = preferences.studioModeEnabled,
@@ -900,608 +1070,14 @@ private fun CompactDockContent(
             onToggleStudioMode = { viewModel.toggleStudioMode() },
             onToggleScreenCapture = onToggleScreenCapture,
             onTogglePrivacyShield = { viewModel.togglePrivacyShield() },
+            onToggleFullscreenPreview = onToggleFullscreenPreview,
             onOpenDestinations = onOpenDestinations,
             onOpenThemes = onOpenThemes,
             onOpenClips = onOpenClips,
+            onOpenLogs = onOpenLogs,
+            onOpenBackup = onOpenBackup,
             onOpenShortcuts = onOpenShortcuts,
             onOpenSettings = onOpenSettings
         )
-    }
-}
-
-@Composable
-private fun StudioNavigationRail(
-    studioModeEnabled: Boolean,
-    isScreenCaptureActive: Boolean,
-    privacyShieldActive: Boolean,
-    chatVisible: Boolean,
-    onToggleStudioMode: () -> Unit,
-    onTogglePrivacyShield: () -> Unit,
-    onOpenThemes: () -> Unit,
-    onOpenDestinations: () -> Unit,
-    onOpenClips: () -> Unit,
-    onToggleScreenCapture: () -> Unit,
-    onToggleChatPane: () -> Unit,
-    onOpenKeyboardShortcuts: () -> Unit,
-    onOpenSettings: () -> Unit
-) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween,
-        modifier = Modifier
-            .width(52.dp)
-            .fillMaxHeight()
-            .background(StudioRail)
-            .border(1.dp, StudioBorder)
-            .padding(vertical = 8.dp)
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MintAccent.copy(alpha = 0.16f))
-                    .border(1.dp, MintAccent, RoundedCornerShape(8.dp))
-            ) {
-                Icon(Icons.Rounded.Podcasts, contentDescription = "mobileLabs", tint = MintAccentBright, modifier = Modifier.size(20.dp))
-            }
-
-            Spacer(Modifier.height(2.dp))
-            RailIconButton(Icons.AutoMirrored.Rounded.ViewQuilt, "Studio Mode (Ctrl+Shift+S)", studioModeEnabled, onToggleStudioMode)
-            RailIconButton(Icons.Rounded.Palette, "Free Overlay Themes", false, onOpenThemes)
-            RailIconButton(Icons.Rounded.Cast, "Multistream Destinations", false, onOpenDestinations)
-            RailIconButton(Icons.Rounded.VideoLibrary, "Recordings & Replay Clips", false, onOpenClips)
-            RailIconButton(
-                icon = if (isScreenCaptureActive) Icons.Rounded.CastConnected else Icons.Rounded.DesktopWindows,
-                contentDesc = "Toggle Screen Capture",
-                active = isScreenCaptureActive,
-                onClick = onToggleScreenCapture
-            )
-            RailIconButton(
-                icon = Icons.Rounded.Shield,
-                contentDesc = "Privacy Shield (Ctrl+P)",
-                active = privacyShieldActive,
-                activeTint = RecordAmber,
-                onClick = onTogglePrivacyShield
-            )
-        }
-
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            RailIconButton(Icons.Rounded.Keyboard, "Keyboard Shortcuts (F12)", false, onOpenKeyboardShortcuts)
-            RailIconButton(Icons.Rounded.ChatBubbleOutline, "Toggle Chat Panel", chatVisible, onToggleChatPane)
-            RailIconButton(Icons.Rounded.Settings, "OBS Studio Settings", false, onOpenSettings)
-        }
-    }
-}
-
-@Composable
-private fun RailIconButton(
-    icon: ImageVector,
-    contentDesc: String,
-    active: Boolean,
-    onClick: () -> Unit,
-    activeTint: Color = MintAccentBright
-) {
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier
-            .size(48.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (active) activeTint.copy(alpha = 0.18f) else Color.Transparent)
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = contentDesc,
-            tint = if (active) activeTint else TextSecondary,
-            modifier = Modifier.size(20.dp)
-        )
-    }
-}
-
-@Composable
-private fun StudioTopOutputBar(
-    preferences: StudioPreferences,
-    onToggleOrientation: (OutputOrientation) -> Unit,
-    onOpenDualOutputManager: () -> Unit,
-    onToggleStudioMode: () -> Unit,
-    onTogglePrivacyShield: () -> Unit
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(StudioHeader)
-            .border(1.dp, StudioBorder)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("mobileLabs", style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.width(8.dp))
-            Surface(color = MintAccent.copy(alpha = 0.15f), shape = RoundedCornerShape(4.dp)) {
-                Text(
-                    "${preferences.resolutionHeight}p${preferences.targetFps} • ${preferences.videoBitrateKbps}k",
-                    color = MintAccentBright,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                )
-            }
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutputToggleChip(
-                label = "Horizontal Output",
-                icon = Icons.Rounded.DesktopWindows,
-                active = preferences.horizontalEnabled,
-                onClick = { onToggleOrientation(OutputOrientation.HORIZONTAL) }
-            )
-            OutputToggleChip(
-                label = "Vertical Output",
-                icon = Icons.Rounded.Smartphone,
-                active = preferences.verticalEnabled,
-                onClick = { onToggleOrientation(OutputOrientation.VERTICAL) }
-            )
-            OutputToggleChip(
-                label = "Studio Mode",
-                icon = Icons.AutoMirrored.Rounded.ViewQuilt,
-                active = preferences.studioModeEnabled,
-                onClick = onToggleStudioMode
-            )
-            if (preferences.privacyShieldActive) {
-                OutputToggleChip(
-                    label = "Shield ON",
-                    icon = Icons.Rounded.Shield,
-                    active = true,
-                    activeColor = RecordAmber,
-                    onClick = onTogglePrivacyShield
-                )
-            }
-        }
-
-        Text(
-            text = "Manage Dual Output",
-            color = MintAccentBright,
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier
-                .clip(RoundedCornerShape(4.dp))
-                .clickable { onOpenDualOutputManager() }
-                .padding(horizontal = 8.dp, vertical = 4.dp)
-        )
-    }
-}
-
-@Composable
-private fun OutputToggleChip(
-    label: String,
-    icon: ImageVector,
-    active: Boolean,
-    activeColor: Color = MintAccentBright,
-    onClick: () -> Unit
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .clip(RoundedCornerShape(5.dp))
-            .background(if (active) StudioElevated else Color.Transparent)
-            .border(1.dp, if (active) activeColor else StudioBorder, RoundedCornerShape(5.dp))
-            .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-    ) {
-        Icon(icon, contentDescription = null, tint = if (active) activeColor else TextMuted, modifier = Modifier.size(14.dp))
-        Spacer(Modifier.width(5.dp))
-        Text(label, color = if (active) TextPrimary else TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-    }
-}
-
-@Composable
-private fun CompactTopHeader(
-    preferences: StudioPreferences,
-    telemetry: BroadcastTelemetry,
-    onToggleOrientation: (OutputOrientation) -> Unit,
-    onToggleDual: () -> Unit,
-    onOpenDestinations: () -> Unit,
-    onOpenSettings: () -> Unit
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(StudioHeader)
-            .border(1.dp, StudioBorder)
-            .padding(horizontal = 10.dp, vertical = 5.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Rounded.Podcasts, contentDescription = null, tint = MintAccentBright, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("mobileLabs", style = MaterialTheme.typography.titleSmall, color = TextPrimary, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.width(6.dp))
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(
-                        when (telemetry.connectionState) {
-                            StreamConnectionState.LIVE -> LiveCrimsonBright
-                            StreamConnectionState.RECONNECTING, StreamConnectionState.CONNECTING -> RecordAmber
-                            else -> TextMuted
-                        }
-                    )
-            )
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            val isDual = preferences.horizontalEnabled && preferences.verticalEnabled
-            CompactPill("16:9", preferences.horizontalEnabled && !isDual) { onToggleOrientation(OutputOrientation.HORIZONTAL) }
-            CompactPill("9:16", preferences.verticalEnabled && !isDual) { onToggleOrientation(OutputOrientation.VERTICAL) }
-            CompactPill("Dual", isDual) { onToggleDual() }
-            IconButton(onClick = onOpenDestinations, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Rounded.Cast, contentDescription = "Destinations", tint = MintAccentBright, modifier = Modifier.size(17.dp))
-            }
-            IconButton(onClick = onOpenSettings, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Rounded.Settings, contentDescription = "Settings", tint = TextSecondary, modifier = Modifier.size(17.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun CompactPill(text: String, active: Boolean, onClick: () -> Unit) {
-    Surface(
-        color = if (active) MintAccent.copy(alpha = 0.2f) else StudioVoid,
-        shape = RoundedCornerShape(4.dp),
-        modifier = Modifier
-            .border(1.dp, if (active) MintAccent else StudioBorder, RoundedCornerShape(4.dp))
-            .clickable { onClick() }
-    ) {
-        Text(
-            text = text,
-            color = if (active) MintAccentBright else TextSecondary,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
-        )
-    }
-}
-
-@Composable
-private fun MobileDockTabStrip(
-    selectedTab: Int,
-    onSelectTab: (Int) -> Unit
-) {
-    val tabs = listOf(
-        "Mixer" to Icons.Rounded.GraphicEq,
-        "Scenes" to Icons.AutoMirrored.Rounded.ViewQuilt,
-        "Sources" to Icons.Rounded.Layers,
-        "Chat" to Icons.Rounded.ChatBubbleOutline,
-        "Tools" to Icons.Rounded.Tune
-    )
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(StudioHeader)
-            .border(1.dp, StudioBorder)
-    ) {
-        tabs.forEachIndexed { idx, (label, icon) ->
-            val active = selectedTab == idx
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .weight(1f)
-                    .clickable { onSelectTab(idx) }
-                    .padding(vertical = 6.dp)
-                    .testTag("mobile_tab_${label.lowercase()}")
-            ) {
-                Icon(icon, contentDescription = label, tint = if (active) MintAccentBright else TextSecondary, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.height(2.dp))
-                Text(label, fontSize = 10.sp, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal, color = if (active) MintAccentBright else TextSecondary)
-            }
-        }
-    }
-}
-
-@Composable
-private fun MobileStudioToolsGrid(
-    studioModeEnabled: Boolean,
-    isScreenCaptureActive: Boolean,
-    privacyShieldActive: Boolean,
-    destinationCount: Int,
-    clipCount: Int,
-    onToggleStudioMode: () -> Unit,
-    onToggleScreenCapture: () -> Unit,
-    onTogglePrivacyShield: () -> Unit,
-    onOpenDestinations: () -> Unit,
-    onOpenThemes: () -> Unit,
-    onOpenClips: () -> Unit,
-    onOpenShortcuts: () -> Unit,
-    onOpenSettings: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(StudioDock)
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Text("Studio Tools & Outputs", style = MaterialTheme.typography.titleSmall, color = TextPrimary)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ToolActionCard(
-                title = if (isScreenCaptureActive) "Screen Active" else "Screen Capture",
-                subtitle = if (isScreenCaptureActive) "Tap to stop" else "Capture games/apps",
-                icon = Icons.Rounded.DesktopWindows,
-                active = isScreenCaptureActive,
-                onClick = onToggleScreenCapture,
-                modifier = Modifier.weight(1f)
-            )
-            ToolActionCard(
-                title = "Privacy Shield",
-                subtitle = if (privacyShieldActive) "Screen hidden" else "Hide screen fast",
-                icon = Icons.Rounded.Shield,
-                active = privacyShieldActive,
-                onClick = onTogglePrivacyShield,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ToolActionCard(
-                title = "Destinations",
-                subtitle = "$destinationCount RTMP active",
-                icon = Icons.Rounded.Cast,
-                active = destinationCount > 0,
-                onClick = onOpenDestinations,
-                modifier = Modifier.weight(1f)
-            )
-            ToolActionCard(
-                title = "Studio Mode",
-                subtitle = if (studioModeEnabled) "Preview -> Program" else "Direct Program",
-                icon = Icons.AutoMirrored.Rounded.ViewQuilt,
-                active = studioModeEnabled,
-                onClick = onToggleStudioMode,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ToolActionCard(
-                title = "Recordings",
-                subtitle = "$clipCount MP4 clips",
-                icon = Icons.Rounded.VideoLibrary,
-                active = false,
-                onClick = onOpenClips,
-                modifier = Modifier.weight(1f)
-            )
-            ToolActionCard(
-                title = "Free Themes",
-                subtitle = "Zero-paywall skins",
-                icon = Icons.Rounded.Palette,
-                active = false,
-                onClick = onOpenThemes,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ToolActionCard(
-                title = "Hotkeys",
-                subtitle = "Keyboard shortcuts",
-                icon = Icons.Rounded.Keyboard,
-                active = false,
-                onClick = onOpenShortcuts,
-                modifier = Modifier.weight(1f)
-            )
-            ToolActionCard(
-                title = "OBS Settings",
-                subtitle = "Bitrate, FPS, Audio",
-                icon = Icons.Rounded.Settings,
-                active = false,
-                onClick = onOpenSettings,
-                modifier = Modifier.weight(1f)
-            )
-        }
-    }
-}
-
-@Composable
-private fun ToolActionCard(
-    title: String,
-    subtitle: String,
-    icon: ImageVector,
-    active: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (active) MintAccent.copy(alpha = 0.14f) else StudioVoid.copy(alpha = 0.7f))
-            .border(1.dp, if (active) MintAccent else StudioBorder, RoundedCornerShape(8.dp))
-            .clickable { onClick() }
-            .padding(9.dp)
-    ) {
-        Icon(icon, contentDescription = null, tint = if (active) MintAccentBright else TextSecondary, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Column {
-            Text(title, color = TextPrimary, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(subtitle, color = TextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
-}
-
-@Composable
-private fun BottomBroadcastControlBar(
-    telemetry: BroadcastTelemetry,
-    isCompact: Boolean,
-    onTestWidgets: () -> Unit,
-    onToggleRecord: () -> Unit,
-    onSaveReplay: () -> Unit,
-    onToggleLive: () -> Unit
-) {
-    val isLive = telemetry.connectionState == StreamConnectionState.LIVE ||
-        telemetry.connectionState == StreamConnectionState.CONNECTING ||
-        telemetry.connectionState == StreamConnectionState.RECONNECTING
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(StudioHeader)
-            .border(1.dp, StudioBorder)
-            .padding(horizontal = 10.dp, vertical = 6.dp)
-    ) {
-        if (isCompact) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = String.format(Locale.US, "CPU %.1f%% • %.0f FPS • %d kbps", telemetry.cpuUsagePercent, telemetry.currentFps, telemetry.currentBitrateKbps),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary
-                )
-                Text(
-                    text = telemetry.statusMessage,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = when (telemetry.connectionState) {
-                        StreamConnectionState.ERROR -> LiveCrimsonBright
-                        StreamConnectionState.RECONNECTING -> RecordAmber
-                        else -> MintAccent
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            if (!isCompact) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Speed, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = String.format(Locale.US, "%.1f%% CPU", telemetry.cpuUsagePercent),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = TextSecondary
-                        )
-                    }
-                    Text(
-                        text = String.format(Locale.US, "%.2f FPS", telemetry.currentFps),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = TextSecondary
-                    )
-                    Text(
-                        text = "${telemetry.currentBitrateKbps} kbps",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MintAccent
-                    )
-                    Text(
-                        text = "Drop: ${telemetry.droppedFrames}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = TextMuted
-                    )
-                    Text(
-                        text = telemetry.statusMessage,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = when (telemetry.connectionState) {
-                            StreamConnectionState.ERROR -> LiveCrimsonBright
-                            StreamConnectionState.RECONNECTING -> RecordAmber
-                            else -> TextSecondary
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = if (isCompact) Modifier.fillMaxWidth() else Modifier
-            ) {
-                Surface(
-                    color = StudioElevated,
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier
-                        .border(1.dp, StudioBorder, RoundedCornerShape(6.dp))
-                        .clickable { onTestWidgets() }
-                        .testTag("test_widgets_button")
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
-                    ) {
-                        Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = MintAccentBright, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = if (isCompact) "Test" else "Test Widgets",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = TextPrimary
-                        )
-                    }
-                }
-
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(if (telemetry.isRecording) LiveCrimsonBright else StudioElevated)
-                        .border(1.5.dp, if (telemetry.isRecording) Color.White else LiveCrimsonBright, CircleShape)
-                        .clickable { onToggleRecord() }
-                        .testTag("record_button")
-                ) {
-                    Text(
-                        text = if (telemetry.isRecording) formatDuration(telemetry.elapsedRecordSeconds).takeLast(5) else "REC",
-                        color = if (telemetry.isRecording) Color.White else LiveCrimsonBright,
-                        fontSize = if (telemetry.isRecording) 9.sp else 10.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                IconButton(
-                    onClick = onSaveReplay,
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(StudioElevated)
-                        .border(1.dp, StudioBorder, CircleShape)
-                        .testTag("save_replay_button")
-                ) {
-                    Icon(Icons.Rounded.History, contentDescription = "Save Instant Replay Clip", tint = MintAccentBright, modifier = Modifier.size(18.dp))
-                }
-
-                if (isCompact) Spacer(Modifier.weight(1f))
-
-                Button(
-                    onClick = onToggleLive,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isLive) LiveCrimson else MintAccent,
-                        contentColor = if (isLive) Color.White else StudioVoid
-                    ),
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier.height(38.dp).testTag("go_live_button")
-                ) {
-                    Text(
-                        text = when (telemetry.connectionState) {
-                            StreamConnectionState.LIVE -> "End Stream"
-                            StreamConnectionState.RECONNECTING -> "Reconnecting..."
-                            StreamConnectionState.CONNECTING -> "Connecting..."
-                            else -> "Go Live"
-                        },
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-        }
     }
 }

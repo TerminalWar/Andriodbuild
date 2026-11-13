@@ -1,10 +1,10 @@
 package com.example.ui.components
 
 import android.content.Intent
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.net.toUri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -253,12 +253,12 @@ fun AddSourceDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                if (selectedType == SourceType.TEXT_BANNER) {
+                if (selectedType == SourceType.TEXT_BANNER || selectedType == SourceType.STREAM_TIMER) {
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
-                        value = textBody,
+                        value = if (selectedType == SourceType.STREAM_TIMER && textBody == "FOLLOW FOR MORE LIVE STREAMS") "LIVE" else textBody,
                         onValueChange = { textBody = it },
-                        label = { Text("Banner Text") },
+                        label = { Text(if (selectedType == SourceType.STREAM_TIMER) "Timer Prefix (e.g. LIVE, UPTIME)" else "Banner Text") },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -301,12 +301,14 @@ fun AddSourceDialog(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SourcePropertiesDialog(
     source: StudioSource,
     orientation: OutputOrientation,
     onDismiss: () -> Unit,
     onSave: (StudioSource) -> Unit,
+    onDuplicate: (StudioSource) -> Unit,
     onDelete: (Long) -> Unit
 ) {
     val rect = if (orientation == OutputOrientation.HORIZONTAL) source.hRect else source.vRect
@@ -323,6 +325,10 @@ fun SourcePropertiesDialog(
     var widthPct by remember { mutableFloatStateOf(rect.width) }
     var heightPct by remember { mutableFloatStateOf(rect.height) }
     var cornerDp by remember { mutableIntStateOf(source.cornerRadiusDp) }
+    var chromaEnabled by remember { mutableStateOf(source.chromaKeyEnabled) }
+    var chromaColorHex by remember { mutableLongStateOf(source.chromaKeyColorHex) }
+    var chromaTolerance by remember { mutableFloatStateOf(source.chromaKeyTolerance) }
+    var videoSpeed by remember { mutableFloatStateOf(source.videoSpeed) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -330,7 +336,7 @@ fun SourcePropertiesDialog(
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 620.dp)
+                .heightIn(max = 640.dp)
                 .border(1.dp, StudioBorder, RoundedCornerShape(12.dp))
         ) {
             Column(
@@ -343,15 +349,23 @@ fun SourcePropertiesDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Source Properties (${orientation.aspectLabel})", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-                    IconButton(onClick = {
-                        onDelete(source.id)
-                        onDismiss()
-                    }) {
-                        Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete source", tint = LiveCrimsonBright)
+                    Text("Properties (${orientation.aspectLabel})", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                    Row {
+                        TextButton(onClick = {
+                            onDuplicate(source)
+                            onDismiss()
+                        }) {
+                            Text("Duplicate", color = MintAccentBright, fontSize = 12.sp)
+                        }
+                        IconButton(onClick = {
+                            onDelete(source.id)
+                            onDismiss()
+                        }) {
+                            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete source", tint = LiveCrimsonBright)
+                        }
                     }
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
 
                 OutlinedTextField(
                     value = name,
@@ -361,12 +375,12 @@ fun SourcePropertiesDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                if (source.type == SourceType.TEXT_BANNER || source.type == SourceType.DONATION_GOAL) {
+                if (source.type == SourceType.TEXT_BANNER || source.type == SourceType.DONATION_GOAL || source.type == SourceType.STREAM_TIMER) {
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = textContent,
                         onValueChange = { textContent = it },
-                        label = { Text("Display Text") },
+                        label = { Text(if (source.type == SourceType.STREAM_TIMER) "Timer Label (LIVE / UPTIME)" else "Display Text") },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -416,6 +430,61 @@ fun SourcePropertiesDialog(
                     )
                 }
 
+                if (source.type == SourceType.VIDEO_OVERLAY) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Loop Playback Speed: ${String.format(Locale.US, "%.2fx", videoSpeed)}", color = MintAccentBright, style = MaterialTheme.typography.labelMedium)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(0.5f, 1.0f, 1.5f, 2.0f).forEach { spd ->
+                            FilterChip(
+                                selected = kotlin.math.abs(videoSpeed - spd) < 0.05f,
+                                onClick = { videoSpeed = spd },
+                                label = { Text("${spd}x") }
+                            )
+                        }
+                    }
+                }
+
+                if (source.type == SourceType.CAMERA || source.type == SourceType.IMAGE_OVERLAY || source.type == SourceType.VIDEO_OVERLAY) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Chroma Key (Green/Blue Screen)", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                            Text("Removes solid backdrop in live encoder", color = TextMuted, fontSize = 11.sp)
+                        }
+                        Switch(
+                            checked = chromaEnabled,
+                            onCheckedChange = { chromaEnabled = it },
+                            colors = SwitchDefaults.colors(checkedTrackColor = MintAccent)
+                        )
+                    }
+                    if (chromaEnabled) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(
+                                0xFF00B140L to "Chroma Green",
+                                0xFF0047ABL to "Chroma Blue",
+                                0xFF00A8CCL to "Teal Screen"
+                            ).forEach { (hex, label) ->
+                                FilterChip(
+                                    selected = chromaColorHex == hex,
+                                    onClick = { chromaColorHex = hex },
+                                    label = { Text(label, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+                        Text("Key Tolerance: ${(chromaTolerance * 100).toInt()}%", color = MintAccent, style = MaterialTheme.typography.labelSmall)
+                        Slider(
+                            value = chromaTolerance,
+                            onValueChange = { chromaTolerance = it },
+                            valueRange = 0.08f..0.55f,
+                            colors = SliderDefaults.colors(thumbColor = MintAccentBright, activeTrackColor = MintAccent)
+                        )
+                    }
+                }
+
                 if (source.type == SourceType.SCREEN_CAPTURE || source.type == SourceType.CAMERA ||
                     source.type == SourceType.IMAGE_OVERLAY || source.type == SourceType.VIDEO_OVERLAY
                 ) {
@@ -442,23 +511,26 @@ fun SourcePropertiesDialog(
                 }
 
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            posX = (1f - widthPct) * 0.5f
-                            posY = (1f - heightPct) * 0.5f
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Center", color = MintAccentBright, fontSize = 12.sp)
+                Text("Quick Alignment Presets", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(4.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = { posX = (1f - widthPct) * 0.5f; posY = (1f - heightPct) * 0.5f }) {
+                        Text("Center", color = MintAccentBright, fontSize = 11.sp)
                     }
-                    OutlinedButton(
-                        onClick = {
-                            posX = 0f; posY = 0f; widthPct = 1f; heightPct = 1f
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Fit Screen", color = MintAccentBright, fontSize = 12.sp)
+                    OutlinedButton(onClick = { posX = 0f; posY = 0f; widthPct = 1f; heightPct = 1f }) {
+                        Text("Fit Full", color = MintAccentBright, fontSize = 11.sp)
+                    }
+                    OutlinedButton(onClick = { posX = 0.03f; posY = 0.03f }) {
+                        Text("Top-L", color = TextPrimary, fontSize = 11.sp)
+                    }
+                    OutlinedButton(onClick = { posX = (0.97f - widthPct).coerceAtLeast(0f); posY = 0.03f }) {
+                        Text("Top-R", color = TextPrimary, fontSize = 11.sp)
+                    }
+                    OutlinedButton(onClick = { posX = 0.03f; posY = (0.97f - heightPct).coerceAtLeast(0f) }) {
+                        Text("Bot-L", color = TextPrimary, fontSize = 11.sp)
+                    }
+                    OutlinedButton(onClick = { posX = (0.97f - widthPct).coerceAtLeast(0f); posY = (0.97f - heightPct).coerceAtLeast(0f) }) {
+                        Text("Bot-R", color = TextPrimary, fontSize = 11.sp)
                     }
                 }
 
@@ -527,7 +599,11 @@ fun SourcePropertiesDialog(
                                 cropToFill = cropToFill,
                                 opacity = opacity,
                                 accentColorHex = accentHex,
-                                cornerRadiusDp = cornerDp
+                                cornerRadiusDp = cornerDp,
+                                chromaKeyEnabled = chromaEnabled,
+                                chromaKeyColorHex = chromaColorHex,
+                                chromaKeyTolerance = chromaTolerance,
+                                videoSpeed = videoSpeed
                             )
                             val updated = if (orientation == OutputOrientation.HORIZONTAL) {
                                 base.copy(hRect = clampedRect)
@@ -556,6 +632,7 @@ fun AudioChannelSettingsDialog(
     var gateEnabled by remember { mutableStateOf(channel.noiseGateEnabled) }
     var gateThreshold by remember { mutableFloatStateOf(channel.noiseGateThresholdDb) }
     var compressorEnabled by remember { mutableStateOf(channel.compressorEnabled) }
+    var monitorEnabled by remember { mutableStateOf(channel.monitorEnabled) }
     var syncOffsetMs by remember { mutableIntStateOf(channel.syncOffsetMs) }
 
     AlertDialog(
@@ -603,6 +680,21 @@ fun AudioChannelSettingsDialog(
                         colors = SwitchDefaults.colors(checkedTrackColor = MintAccent)
                     )
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Headphone Audio Monitor", color = TextPrimary, style = MaterialTheme.typography.titleSmall)
+                        Text("Routes live DSP channel mix to headphones", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(
+                        checked = monitorEnabled,
+                        onCheckedChange = { monitorEnabled = it },
+                        colors = SwitchDefaults.colors(checkedTrackColor = MintAccent)
+                    )
+                }
                 Column {
                     Text("Audio Sync Offset: $syncOffsetMs ms", color = RecordAmber, style = MaterialTheme.typography.labelMedium)
                     Slider(
@@ -622,6 +714,7 @@ fun AudioChannelSettingsDialog(
                             noiseGateEnabled = gateEnabled,
                             noiseGateThresholdDb = gateThreshold,
                             compressorEnabled = compressorEnabled,
+                            monitorEnabled = monitorEnabled,
                             syncOffsetMs = syncOffsetMs
                         )
                     )
@@ -645,7 +738,8 @@ fun DestinationsSheetDialog(
     onDismiss: () -> Unit,
     onSaveDestination: (StreamDestination) -> Unit,
     onToggleEnabled: (StreamDestination) -> Unit,
-    onDeleteDestination: (Long) -> Unit
+    onDeleteDestination: (Long) -> Unit,
+    onTestDestination: (String, String, (String) -> Unit) -> Unit
 ) {
     var editingDest by remember { mutableStateOf<StreamDestination?>(null) }
 
@@ -681,6 +775,7 @@ fun DestinationsSheetDialog(
                     DestinationEditorForm(
                         initial = editingDest!!,
                         onCancel = { editingDest = null },
+                        onTestConnection = onTestDestination,
                         onSave = { saved ->
                             onSaveDestination(saved)
                             editingDest = null
@@ -773,6 +868,7 @@ fun DestinationsSheetDialog(
 private fun DestinationEditorForm(
     initial: StreamDestination,
     onCancel: () -> Unit,
+    onTestConnection: (String, String, (String) -> Unit) -> Unit,
     onSave: (StreamDestination) -> Unit
 ) {
     var platform by remember { mutableStateOf(initial.platform) }
@@ -781,6 +877,8 @@ private fun DestinationEditorForm(
     var streamKey by remember { mutableStateOf(initial.streamKey) }
     var orientation by remember { mutableStateOf(initial.orientation) }
     var showKey by remember { mutableStateOf(false) }
+    var pingStatus by remember { mutableStateOf<String?>(null) }
+    var isTesting by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -850,25 +948,48 @@ private fun DestinationEditorForm(
             }
         }
 
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = onCancel) { Text("Back", color = TextSecondary) }
-            Spacer(Modifier.width(8.dp))
-            Button(
+        pingStatus?.let { msg ->
+            Text(
+                text = msg,
+                color = if (msg.contains("OK")) MintAccentBright else RecordAmber,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            OutlinedButton(
+                enabled = !isTesting && rtmpUrl.isNotBlank(),
                 onClick = {
-                    onSave(
-                        initial.copy(
-                            name = name.ifBlank { platform.displayName },
-                            platform = platform,
-                            rtmpUrl = rtmpUrl.trim(),
-                            streamKey = streamKey.trim(),
-                            orientation = orientation,
-                            isEnabled = true
-                        )
-                    )
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = MintAccent, contentColor = StudioVoid)
+                    isTesting = true
+                    pingStatus = "Testing TCP/TLS + RTMP handshake..."
+                    onTestConnection(rtmpUrl, streamKey) { res ->
+                        pingStatus = res
+                        isTesting = false
+                    }
+                }
             ) {
-                Text("Save Target", fontWeight = FontWeight.Bold)
+                Text(if (isTesting) "Testing..." else "Test RTMP", color = MintAccentBright, fontSize = 12.sp)
+            }
+            Row {
+                TextButton(onClick = onCancel) { Text("Back", color = TextSecondary) }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        onSave(
+                            initial.copy(
+                                name = name.ifBlank { platform.displayName },
+                                platform = platform,
+                                rtmpUrl = rtmpUrl.trim(),
+                                streamKey = streamKey.trim(),
+                                orientation = orientation,
+                                isEnabled = true
+                            )
+                        )
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MintAccent, contentColor = StudioVoid)
+                ) {
+                    Text("Save Target", fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
@@ -878,11 +999,14 @@ private fun DestinationEditorForm(
 @Composable
 fun StudioSettingsDialog(
     preferences: StudioPreferences,
+    freeStorageGb: Float,
     isScreenCaptureActive: Boolean,
     onDismiss: () -> Unit,
     onUpdatePreferences: ((StudioPreferences) -> StudioPreferences) -> Unit,
     onToggleScreenCapture: () -> Unit,
-    onOpenKeyboardShortcuts: () -> Unit
+    onOpenKeyboardShortcuts: () -> Unit,
+    onOpenBackupDialog: () -> Unit,
+    onOpenLogsDialog: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Video & Stream", "Recording", "Audio", "Mobile Pro")
@@ -896,7 +1020,7 @@ fun StudioSettingsDialog(
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth(0.92f)
-                .heightIn(max = 620.dp)
+                .heightIn(max = 640.dp)
                 .border(1.dp, StudioBorder, RoundedCornerShape(12.dp))
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
@@ -958,7 +1082,7 @@ fun StudioSettingsDialog(
 
                             Text("Output Resolution", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                listOf(480 to "480p", 720 to "720p HD", 1080 to "1080p FHD").forEach { (res, label) ->
+                                listOf(480 to "480p", 720 to "720p HD", 900 to "900p+", 1080 to "1080p FHD").forEach { (res, label) ->
                                     FilterChip(
                                         selected = preferences.resolutionHeight == res,
                                         onClick = { onUpdatePreferences { it.copy(resolutionHeight = res) } },
@@ -1011,6 +1135,25 @@ fun StudioSettingsDialog(
                         }
 
                         1 -> {
+                            Surface(
+                                color = StudioVoid.copy(alpha = 0.7f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth().border(1.dp, StudioBorder, RoundedCornerShape(8.dp))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Available Storage (Movies/mobileLabs)", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                        String.format(Locale.US, "%.1f GB Free", freeStorageGb),
+                                        color = if (freeStorageGb < 2f) LiveCrimsonBright else MintAccentBright,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
                             Text("Local Recording Bitrate: ${preferences.recordingBitrateKbps} kbps", color = MintAccentBright, style = MaterialTheme.typography.labelMedium)
                             Text("Higher bitrate produces crisp local MP4 masters even if your live stream is 6,000 kbps.", color = TextMuted, style = MaterialTheme.typography.bodySmall)
                             Slider(
@@ -1064,9 +1207,37 @@ fun StudioSettingsDialog(
                                     )
                                 }
                             }
+                            HorizontalDivider(color = StudioBorder)
+                            SettingsToggleRow(
+                                title = "Auto-Ducking (Mic lowers Game Audio)",
+                                subtitle = "Automatically attenuates Desktop/Game Audio while speaking",
+                                checked = preferences.autoDuckingEnabled,
+                                onCheckedChange = { v -> onUpdatePreferences { it.copy(autoDuckingEnabled = v) } }
+                            )
+                            if (preferences.autoDuckingEnabled) {
+                                Text("Ducking Reduction: ${preferences.duckingAmountDb.toInt()} dB", color = MintAccentBright, style = MaterialTheme.typography.labelMedium)
+                                Slider(
+                                    value = preferences.duckingAmountDb,
+                                    onValueChange = { val r = (it / 2f).toInt() * 2f; onUpdatePreferences { p -> p.copy(duckingAmountDb = r) } },
+                                    valueRange = -20f..-4f,
+                                    colors = SliderDefaults.colors(thumbColor = MintAccentBright, activeTrackColor = MintAccent)
+                                )
+                            }
                         }
 
                         3 -> {
+                            SettingsToggleRow(
+                                title = "Game Performance Mode",
+                                subtitle = "Throttles tablet preview redraws to keep games silky while encoding at full FPS",
+                                checked = preferences.gamePerformanceMode,
+                                onCheckedChange = { v -> onUpdatePreferences { it.copy(gamePerformanceMode = v) } }
+                            )
+                            SettingsToggleRow(
+                                title = "Confirm Before Stopping Live Stream",
+                                subtitle = "Prevents accidental mid-game broadcast drops",
+                                checked = preferences.confirmStopStream,
+                                onCheckedChange = { v -> onUpdatePreferences { it.copy(confirmStopStream = v) } }
+                            )
                             SettingsToggleRow(
                                 title = "Auto-Reconnect Drop Watchdog",
                                 subtitle = "Automatically reconnects RTMP drops during multi-hour streams",
@@ -1074,8 +1245,8 @@ fun StudioSettingsDialog(
                                 onCheckedChange = { v -> onUpdatePreferences { it.copy(autoReconnectEnabled = v) } }
                             )
                             SettingsToggleRow(
-                                title = "Dynamic Bitrate Adaptation",
-                                subtitle = "Adjusts bitrate smoothly on congested mobile networks",
+                                title = "Dynamic Bitrate Adaptation (ABR)",
+                                subtitle = "Steps bitrate smoothly on congested mobile networks",
                                 checked = preferences.dynamicBitrateEnabled,
                                 onCheckedChange = { v -> onUpdatePreferences { it.copy(dynamicBitrateEnabled = v) } }
                             )
@@ -1103,6 +1274,20 @@ fun StudioSettingsDialog(
                                 checked = preferences.studioModeEnabled,
                                 onCheckedChange = { v -> onUpdatePreferences { it.copy(studioModeEnabled = v) } }
                             )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                OutlinedButton(
+                                    onClick = { onDismiss(); onOpenBackupDialog() },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Scene Backup JSON", color = MintAccentBright, fontSize = 11.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = { onDismiss(); onOpenLogsDialog() },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Diagnostics Console", color = TextPrimary, fontSize = 11.sp)
+                                }
+                            }
                         }
                     }
                 }
@@ -1139,16 +1324,19 @@ private fun SettingsToggleRow(
 fun KeyboardShortcutsDialog(onDismiss: () -> Unit) {
     val shortcuts = listOf(
         "F1 – F7 / Ctrl + 1..7" to "Switch Scenes 1–7",
-        "Space / Enter" to "Transition Preview -> Program (Studio Mode)",
+        "F8" to "Drop Stream Marker at Current Time",
+        "Space" to "Transition Preview -> Program (Studio Mode)",
         "Ctrl + L  or  F9" to "Go Live / End Stream",
         "Ctrl + R  or  F10" to "Start / Stop Local MP4 Recording",
         "Ctrl + B  or  F11" to "Save Instant Replay Clip",
+        "Ctrl + Shift + F" to "Toggle Clean Fullscreen Program Preview",
         "Ctrl + M" to "Mute / Unmute Mic/Aux",
         "Ctrl + D" to "Mute / Unmute Desktop / Game Audio",
         "Ctrl + P" to "Toggle Privacy Shield",
         "Ctrl + T" to "Trigger Test Widgets (Alerts & Goal)",
         "Ctrl + Shift + S" to "Toggle Studio Mode",
-        "Arrow Keys / Shift+Arrows" to "Nudge selected overlay (1% / 5%)",
+        "Arrows / Shift+Arrows" to "Nudge selected overlay (1% / 5%)",
+        "Ctrl + Arrows" to "Resize selected overlay",
         "Delete" to "Remove selected overlay",
         "F12  or  Ctrl + /" to "Open this Keyboard Shortcuts Guide"
     )
@@ -1333,7 +1521,7 @@ fun RecordingsClipsDialog(
                                 IconButton(onClick = {
                                     runCatching {
                                         val intent = Intent(Intent.ACTION_VIEW).apply {
-                                            setDataAndType(Uri.parse(clip.fileUri), "video/mp4")
+                                            setDataAndType(clip.fileUri.toUri(), "video/mp4")
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
                                         context.startActivity(intent)
@@ -1345,7 +1533,7 @@ fun RecordingsClipsDialog(
                                     runCatching {
                                         val share = Intent(Intent.ACTION_SEND).apply {
                                             type = "video/mp4"
-                                            putExtra(Intent.EXTRA_STREAM, Uri.parse(clip.fileUri))
+                                            putExtra(Intent.EXTRA_STREAM, clip.fileUri.toUri())
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
                                         context.startActivity(Intent.createChooser(share, "Share MP4 Clip"))

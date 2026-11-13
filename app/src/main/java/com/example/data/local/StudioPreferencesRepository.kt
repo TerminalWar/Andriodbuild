@@ -5,12 +5,14 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.model.EncoderProfile
 import com.example.data.model.RateControlMode
 import com.example.data.model.StudioPreferences
+import com.example.data.model.TransitionType
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -34,9 +36,15 @@ class StudioPreferencesRepository(private val context: Context) {
         val REPLAY_BUFFER_SECONDS = intPreferencesKey("replay_buffer_seconds")
         val AUTO_RECONNECT = booleanPreferencesKey("auto_reconnect")
         val DYNAMIC_BITRATE = booleanPreferencesKey("dynamic_bitrate")
+        val AUTO_DUCKING = booleanPreferencesKey("auto_ducking")
+        val DUCKING_AMOUNT_DB = floatPreferencesKey("ducking_amount_db")
         val KEEP_SCREEN_AWAKE = booleanPreferencesKey("keep_screen_awake")
         val PRIVACY_SHIELD = booleanPreferencesKey("privacy_shield")
         val GRID_SNAP = booleanPreferencesKey("grid_snap")
+        val GAME_PERF_MODE = booleanPreferencesKey("game_perf_mode")
+        val CONFIRM_STOP_STREAM = booleanPreferencesKey("confirm_stop_stream")
+        val TRANSITION_TYPE = stringPreferencesKey("transition_type")
+        val TRANSITION_DURATION_MS = intPreferencesKey("transition_duration_ms")
         val TWITCH_CHANNEL = stringPreferencesKey("twitch_channel")
         val STREAM_TITLE = stringPreferencesKey("stream_title")
         val OVERLAY_THEME_ID = stringPreferencesKey("overlay_theme_id")
@@ -66,9 +74,17 @@ class StudioPreferencesRepository(private val context: Context) {
         replayBufferSeconds = prefs[Keys.REPLAY_BUFFER_SECONDS] ?: 30,
         autoReconnectEnabled = prefs[Keys.AUTO_RECONNECT] ?: true,
         dynamicBitrateEnabled = prefs[Keys.DYNAMIC_BITRATE] ?: true,
+        autoDuckingEnabled = prefs[Keys.AUTO_DUCKING] ?: true,
+        duckingAmountDb = prefs[Keys.DUCKING_AMOUNT_DB] ?: -10f,
         keepScreenAwake = prefs[Keys.KEEP_SCREEN_AWAKE] ?: true,
         privacyShieldActive = prefs[Keys.PRIVACY_SHIELD] ?: false,
         gridSnapEnabled = prefs[Keys.GRID_SNAP] ?: true,
+        gamePerformanceMode = prefs[Keys.GAME_PERF_MODE] ?: false,
+        confirmStopStream = prefs[Keys.CONFIRM_STOP_STREAM] ?: true,
+        transitionType = runCatching {
+            TransitionType.valueOf(prefs[Keys.TRANSITION_TYPE] ?: TransitionType.FADE.name)
+        }.getOrDefault(TransitionType.FADE),
+        transitionDurationMs = prefs[Keys.TRANSITION_DURATION_MS] ?: 300,
         twitchChannel = prefs[Keys.TWITCH_CHANNEL] ?: "",
         streamTitle = prefs[Keys.STREAM_TITLE] ?: "Pro Mobile Stream | mobileLabs",
         overlayThemeId = prefs[Keys.OVERLAY_THEME_ID] ?: "mint_pro"
@@ -93,9 +109,15 @@ class StudioPreferencesRepository(private val context: Context) {
             prefs[Keys.REPLAY_BUFFER_SECONDS] = updated.replayBufferSeconds
             prefs[Keys.AUTO_RECONNECT] = updated.autoReconnectEnabled
             prefs[Keys.DYNAMIC_BITRATE] = updated.dynamicBitrateEnabled
+            prefs[Keys.AUTO_DUCKING] = updated.autoDuckingEnabled
+            prefs[Keys.DUCKING_AMOUNT_DB] = updated.duckingAmountDb
             prefs[Keys.KEEP_SCREEN_AWAKE] = updated.keepScreenAwake
             prefs[Keys.PRIVACY_SHIELD] = updated.privacyShieldActive
             prefs[Keys.GRID_SNAP] = updated.gridSnapEnabled
+            prefs[Keys.GAME_PERF_MODE] = updated.gamePerformanceMode
+            prefs[Keys.CONFIRM_STOP_STREAM] = updated.confirmStopStream
+            prefs[Keys.TRANSITION_TYPE] = updated.transitionType.name
+            prefs[Keys.TRANSITION_DURATION_MS] = updated.transitionDurationMs
             prefs[Keys.TWITCH_CHANNEL] = updated.twitchChannel
             prefs[Keys.STREAM_TITLE] = updated.streamTitle
             prefs[Keys.OVERLAY_THEME_ID] = updated.overlayThemeId

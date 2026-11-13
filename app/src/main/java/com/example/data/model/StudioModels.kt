@@ -13,12 +13,13 @@ enum class OutputOrientation(val label: String, val aspectLabel: String) {
 
 enum class SourceType(val displayName: String, val description: String) {
     SCREEN_CAPTURE("Screen / Game Capture", "Lag-free Android MediaProjection display capture"),
-    CAMERA("Video Capture Device", "Live front or rear CameraX feed with zoom & flip"),
+    CAMERA("Video Capture Device", "Live front/rear CameraX feed with zoom, mirror & chroma"),
     WEBCAM_FRAME("Webcam Frame", "Styled border & glow frame for your camera"),
     VIDEO_OVERLAY("Media / Video Overlay", "Looping MP4/WebM animated overlay or stinger"),
     IMAGE_OVERLAY("Image / Logo", "PNG/JPG overlay from Android Photo Picker"),
     TEXT_BANNER("Text (GDI+ / Ticker)", "Custom stream label, handle, or BRB banner"),
-    ALERTBOX("Alertbox", "Live follower, sub & tip pop-up notifications"),
+    STREAM_TIMER("Stream Uptime & Clock", "Live broadcast timer, FPS & status pill widget"),
+    ALERTBOX("Alertbox", "Live follower, sub, raid & tip pop-up notifications"),
     DONATION_GOAL("Donation Goal", "Real-time progress bar overlay"),
     CHATBOX("Chatbox", "On-stream transparent live chat overlay"),
     COLOR_SOURCE("Color / Backdrop", "Solid or gradient studio backdrop"),
@@ -63,7 +64,11 @@ data class StudioSource(
     val cameraZoom: Float = 1.0f,
     val cropToFill: Boolean = true,
     val opacity: Float = 1f,
-    val cornerRadiusDp: Int = 10
+    val cornerRadiusDp: Int = 10,
+    val chromaKeyEnabled: Boolean = false,
+    val chromaKeyColorHex: Long = 0xFF00B140,
+    val chromaKeyTolerance: Float = 0.28f,
+    val videoSpeed: Float = 1.0f
 )
 
 enum class AudioChannelId(val label: String) {
@@ -88,7 +93,9 @@ data class AudioMeterReading(
     val channelId: String,
     val rmsDb: Float = -60f,
     val peakDb: Float = -60f,
-    val isClipping: Boolean = false
+    val peakHoldDb: Float = -60f,
+    val isClipping: Boolean = false,
+    val isDucking: Boolean = false
 )
 
 enum class StreamPlatform(
@@ -172,7 +179,7 @@ data class StudioPreferences(
     val videoBitrateKbps: Int = 6000,
     val recordingBitrateKbps: Int = 12000,
     val targetFps: Int = 60,
-    val resolutionHeight: Int = 720, // 480, 720, or 1080
+    val resolutionHeight: Int = 720, // 480, 720, 900, or 1080
     val keyframeIntervalSec: Int = 2,
     val rateControl: RateControlMode = RateControlMode.CBR,
     val encoderProfile: EncoderProfile = EncoderProfile.HIGH,
@@ -184,9 +191,15 @@ data class StudioPreferences(
     val replayBufferSeconds: Int = 30,
     val autoReconnectEnabled: Boolean = true,
     val dynamicBitrateEnabled: Boolean = true,
+    val autoDuckingEnabled: Boolean = true,
+    val duckingAmountDb: Float = -10f,
     val keepScreenAwake: Boolean = true,
     val privacyShieldActive: Boolean = false,
     val gridSnapEnabled: Boolean = true,
+    val gamePerformanceMode: Boolean = false,
+    val confirmStopStream: Boolean = true,
+    val transitionType: TransitionType = TransitionType.FADE,
+    val transitionDurationMs: Int = 300,
     val twitchChannel: String = "",
     val streamTitle: String = "Pro Mobile Stream | mobileLabs",
     val overlayThemeId: String = "mint_pro"
@@ -217,6 +230,29 @@ enum class DestinationHealthState {
     FAILED
 }
 
+enum class StreamHealthLevel(val label: String) {
+    IDLE("STANDBY"),
+    EXCELLENT("EXCELLENT"),
+    GOOD("GOOD"),
+    FAIR("FAIR"),
+    POOR("POOR")
+}
+
+data class StreamMarker(
+    val id: Long = System.currentTimeMillis(),
+    val elapsedSec: Long,
+    val sceneName: String,
+    val note: String
+)
+
+data class BroadcastLogEntry(
+    val id: Long = System.nanoTime(),
+    val timeText: String,
+    val level: String, // INFO, WARN, ERR
+    val tag: String,
+    val message: String
+)
+
 data class BroadcastTelemetry(
     val connectionState: StreamConnectionState = StreamConnectionState.OFFLINE,
     val isRecording: Boolean = false,
@@ -230,6 +266,10 @@ data class BroadcastTelemetry(
     val cpuUsagePercent: Float = 1.7f,
     val droppedFrames: Int = 0,
     val totalFrames: Int = 0,
+    val batteryPercent: Int = 100,
+    val freeStorageGb: Float = 16.0f,
+    val isThermalThrottling: Boolean = false,
+    val healthLevel: StreamHealthLevel = StreamHealthLevel.IDLE,
     val activeDestinationsCount: Int = 0,
     val destinationHealth: Map<Long, DestinationHealthState> = emptyMap(),
     val statusMessage: String = "Ready — All features unlocked"

@@ -43,16 +43,91 @@ class RtmpClient(
 
     fun isActive(): Boolean = isConnected.get()
 
+    companion object {
+        /**
+         * Performs a real TCP/TLS socket connect + C0/C1/C2 handshake test against the
+         * configured RTMP/RTMPS server and returns the round-trip latency in milliseconds.
+         */
+        fun testHandshake(rtmpUrl: String, streamKey: String): Result<Long> {
+            return runCatching {
+                val startNs = System.nanoTime()
+                val tester = RtmpClient(0L, "Preflight Test", rtmpUrl, streamKey)
+                try {
+                    val fullUrl = buildFullUrl(rtmpUrl, streamKey)
+                    val parsed = parseRtmpUri(fullUrl, requireStreamKey = false)
+                    val useTls = parsed.scheme.equals("rtmps", ignoreCase = true)
+                    val port = if (parsed.port > 0) parsed.port else if (useTls) 443 else 1935
+                    val rawSocket = Socket().apply {
+                        tcpNoDelay = true
+                        keepAlive = true
+                        soTimeout = 5_000
+                        connect(InetSocketAddress(parsed.host, port), 5_000)
+                    }
+                    val activeSocket = if (useTls) {
+                        val sslFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
+                        sslFactory.createSocket(rawSocket, parsed.host, port, true).apply {
+                            soTimeout = 5_000
+                        }
+                    } else rawSocket
+                    tester.socket = activeSocket
+                    tester.input = BufferedInputStream(activeSocket.getInputStream(), 8192)
+                    tester.output = BufferedOutputStream(activeSocket.getOutputStream(), 8192)
+                    tester.performHandshake()
+                    ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+                } finally {
+                    tester.close()
+                }
+            }
+        }
+
+        internal data class ParsedRtmpUri(
+            val scheme: String,
+            val host: String,
+            val port: Int,
+            val app: String,
+            val streamName: String,
+            val tcUrl: String
+        )
+
+        internal fun buildFullUrl(base: String, key: String): String {
+            val trimmedBase = base.trim()
+            val trimmedKey = key.trim()
+            if (trimmedKey.isEmpty()) return trimmedBase
+            return if (trimmedBase.endsWith("/")) "$trimmedBase$trimmedKey" else "$trimmedBase/$trimmedKey"
+        }
+
+        internal fun parseRtmpUri(fullUrl: String, requireStreamKey: Boolean = true): ParsedRtmpUri {
+            val uri = URI(fullUrl)
+            val scheme = uri.scheme ?: "rtmp"
+            val host = uri.host ?: throw IllegalArgumentException("Invalid RTMP host in URL: $fullUrl")
+            val port = uri.port
+            val rawPath = (uri.path ?: "").trimStart('/')
+            val segments = rawPath.split('/', limit = 2)
+            val app = segments.getOrNull(0)?.takeIf { it.isNotBlank() }
+                ?: throw IllegalArgumentException("Missing RTMP app path (e.g. /app or /live2)")
+            val streamName = segments.getOrNull(1)?.takeIf { it.isNotBlank() } ?: if (requireStreamKey) {
+                throw IllegalArgumentException("Missing Stream Key")
+            } else {
+                ""
+            }
+            val query = uri.rawQuery?.let { "?$it" } ?: ""
+            val portSuffix = if (port > 0) ":$port" else ""
+            val tcUrl = "$scheme://$host$portSuffix/$app"
+            return ParsedRtmpUri(scheme, host, port, app, "$streamName$query", tcUrl)
+        }
+    }
+
     fun connect(width: Int, height: Int, fps: Int, videoBitrateKbps: Int): Result<Unit> {
         return runCatching {
             close()
             val fullUrl = buildFullUrl(rtmpUrl, streamKey)
-            val parsed = parseRtmpUri(fullUrl)
+            val parsed = parseRtmpUri(fullUrl, requireStreamKey = true)
             val useTls = parsed.scheme.equals("rtmps", ignoreCase = true)
             val port = if (parsed.port > 0) parsed.port else if (useTls) 443 else 1935
 
             val rawSocket = Socket().apply {
                 tcpNoDelay = true
+                keepAlive = true
                 soTimeout = 10_000
                 sendBufferSize = 256 * 1024
                 connect(InetSocketAddress(parsed.host, port), 8_000)
@@ -71,16 +146,16 @@ class RtmpClient(
             output = BufferedOutputStream(activeSocket.getOutputStream(), 65536)
 
             performHandshake()
-            sendSetChunkSize(chunkSizeOut)
-            sendConnect(parsed.app, parsed.tcUrl)
+            if (!sendSetChunkSize(chunkSizeOut)) throw IllegalStateException("RTMP connection closed during SetChunkSize")
+            if (!sendConnect(parsed.app, parsed.tcUrl)) throw IllegalStateException("RTMP connection closed during connect")
             drainServerResponses(timeoutMs = 1500)
-            sendReleaseStream(parsed.streamName)
-            sendFcPublish(parsed.streamName)
-            sendCreateStream()
+            if (!sendReleaseStream(parsed.streamName)) throw IllegalStateException("RTMP connection closed during releaseStream")
+            if (!sendFcPublish(parsed.streamName)) throw IllegalStateException("RTMP connection closed during FCPublish")
+            if (!sendCreateStream()) throw IllegalStateException("RTMP connection closed during createStream")
             drainServerResponses(timeoutMs = 1000)
-            sendPublish(parsed.streamName)
+            if (!sendPublish(parsed.streamName)) throw IllegalStateException("RTMP server rejected publish or stream key")
             drainServerResponses(timeoutMs = 1000)
-            sendMetaData(width, height, fps, videoBitrateKbps)
+            if (!sendMetaData(width, height, fps, videoBitrateKbps)) throw IllegalStateException("RTMP connection closed during onMetaData")
 
             sentVideoConfig = false
             sentAudioConfig = false
@@ -175,12 +250,12 @@ class RtmpClient(
         out.flush()
     }
 
-    private fun sendSetChunkSize(size: Int) {
+    private fun sendSetChunkSize(size: Int): Boolean {
         val buf = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(size).array()
-        sendRtmpPacket(chunkStreamId = 2, timestampMs = 0, msgType = 1, streamId = 0, payload = buf)
+        return sendRtmpPacket(chunkStreamId = 2, timestampMs = 0, msgType = 1, streamId = 0, payload = buf)
     }
 
-    private fun sendConnect(app: String, tcUrl: String) {
+    private fun sendConnect(app: String, tcUrl: String): Boolean {
         val amf = Amf0Writer()
         amf.writeString("connect")
         amf.writeNumber(1.0)
@@ -195,46 +270,46 @@ class RtmpClient(
         amf.writeProperty("videoCodecs", 128.0)
         amf.writeProperty("videoFunction", 1.0)
         amf.writeObjectEnd()
-        sendRtmpPacket(chunkStreamId = 3, timestampMs = 0, msgType = 20, streamId = 0, payload = amf.toByteArray())
+        return sendRtmpPacket(chunkStreamId = 3, timestampMs = 0, msgType = 20, streamId = 0, payload = amf.toByteArray())
     }
 
-    private fun sendReleaseStream(streamName: String) {
+    private fun sendReleaseStream(streamName: String): Boolean {
         val amf = Amf0Writer()
         amf.writeString("releaseStream")
         amf.writeNumber(2.0)
         amf.writeNull()
         amf.writeString(streamName)
-        sendRtmpPacket(chunkStreamId = 3, timestampMs = 0, msgType = 20, streamId = 0, payload = amf.toByteArray())
+        return sendRtmpPacket(chunkStreamId = 3, timestampMs = 0, msgType = 20, streamId = 0, payload = amf.toByteArray())
     }
 
-    private fun sendFcPublish(streamName: String) {
+    private fun sendFcPublish(streamName: String): Boolean {
         val amf = Amf0Writer()
         amf.writeString("FCPublish")
         amf.writeNumber(3.0)
         amf.writeNull()
         amf.writeString(streamName)
-        sendRtmpPacket(chunkStreamId = 3, timestampMs = 0, msgType = 20, streamId = 0, payload = amf.toByteArray())
+        return sendRtmpPacket(chunkStreamId = 3, timestampMs = 0, msgType = 20, streamId = 0, payload = amf.toByteArray())
     }
 
-    private fun sendCreateStream() {
+    private fun sendCreateStream(): Boolean {
         val amf = Amf0Writer()
         amf.writeString("createStream")
         amf.writeNumber(4.0)
         amf.writeNull()
-        sendRtmpPacket(chunkStreamId = 3, timestampMs = 0, msgType = 20, streamId = 0, payload = amf.toByteArray())
+        return sendRtmpPacket(chunkStreamId = 3, timestampMs = 0, msgType = 20, streamId = 0, payload = amf.toByteArray())
     }
 
-    private fun sendPublish(streamName: String) {
+    private fun sendPublish(streamName: String): Boolean {
         val amf = Amf0Writer()
         amf.writeString("publish")
         amf.writeNumber(5.0)
         amf.writeNull()
         amf.writeString(streamName)
         amf.writeString("live")
-        sendRtmpPacket(chunkStreamId = 8, timestampMs = 0, msgType = 20, streamId = 1, payload = amf.toByteArray())
+        return sendRtmpPacket(chunkStreamId = 8, timestampMs = 0, msgType = 20, streamId = 1, payload = amf.toByteArray())
     }
 
-    private fun sendMetaData(width: Int, height: Int, fps: Int, videoBitrateKbps: Int) {
+    private fun sendMetaData(width: Int, height: Int, fps: Int, videoBitrateKbps: Int): Boolean {
         val amf = Amf0Writer()
         amf.writeString("@setDataFrame")
         amf.writeString("onMetaData")
@@ -250,7 +325,7 @@ class RtmpClient(
         amf.writeProperty("audiosamplesize", 16.0)
         amf.writeProperty("stereo", false)
         amf.writeObjectEnd()
-        sendRtmpPacket(chunkStreamId = 4, timestampMs = 0, msgType = 18, streamId = 1, payload = amf.toByteArray())
+        return sendRtmpPacket(chunkStreamId = 4, timestampMs = 0, msgType = 18, streamId = 1, payload = amf.toByteArray())
     }
 
     private fun sendRtmpPacket(
@@ -341,39 +416,6 @@ class RtmpClient(
             read += n
         }
         return buf
-    }
-
-    private data class ParsedRtmpUri(
-        val scheme: String,
-        val host: String,
-        val port: Int,
-        val app: String,
-        val streamName: String,
-        val tcUrl: String
-    )
-
-    private fun buildFullUrl(base: String, key: String): String {
-        val trimmedBase = base.trim()
-        val trimmedKey = key.trim()
-        if (trimmedKey.isEmpty()) return trimmedBase
-        return if (trimmedBase.endsWith("/")) "$trimmedBase$trimmedKey" else "$trimmedBase/$trimmedKey"
-    }
-
-    private fun parseRtmpUri(fullUrl: String): ParsedRtmpUri {
-        val uri = URI(fullUrl)
-        val scheme = uri.scheme ?: "rtmp"
-        val host = uri.host ?: throw IllegalArgumentException("Invalid RTMP host in URL: $fullUrl")
-        val port = uri.port
-        val rawPath = (uri.path ?: "").trimStart('/')
-        val segments = rawPath.split('/', limit = 2)
-        val app = segments.getOrNull(0)?.takeIf { it.isNotBlank() }
-            ?: throw IllegalArgumentException("Missing RTMP app path (e.g. /app or /live2)")
-        val streamName = segments.getOrNull(1)?.takeIf { it.isNotBlank() }
-            ?: throw IllegalArgumentException("Missing Stream Key")
-        val query = uri.rawQuery?.let { "?$it" } ?: ""
-        val portSuffix = if (port > 0) ":$port" else ""
-        val tcUrl = "$scheme://$host$portSuffix/$app"
-        return ParsedRtmpUri(scheme, host, port, app, "$streamName$query", tcUrl)
     }
 
     private class Amf0Writer {

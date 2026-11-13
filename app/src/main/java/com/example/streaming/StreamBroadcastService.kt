@@ -1,5 +1,6 @@
 package com.example.streaming
 
+import android.Manifest
 import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
@@ -8,12 +9,18 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.view.Display
+import android.view.WindowManager
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import com.example.MainActivity
 import com.example.MobileLabsApplication
 import com.example.R
@@ -66,6 +73,17 @@ class StreamBroadcastService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var displayManager: DisplayManager? = null
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId == Display.DEFAULT_DISPLAY && MediaProjectionHolder.isScreenCapturing.value) {
+                val (w, h, dpi) = currentDisplayMetrics()
+                MediaProjectionHolder.resizeVirtualDisplay(w, h, dpi)
+            }
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -74,7 +92,10 @@ class StreamBroadcastService : Service() {
         createNotificationChannel()
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mobileLabs::BroadcastWakeLock").apply {
-            acquire(6 * 60 * 60 * 1000L)
+            acquire(8 * 60 * 60 * 1000L)
+        }
+        displayManager = (getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager)?.also {
+            it.registerDisplayListener(displayListener, null)
         }
     }
 
@@ -90,21 +111,21 @@ class StreamBroadcastService : Service() {
             ACTION_START_PROJECTION -> {
                 promoteForeground("Screen Capture & Studio Active", includeMediaProjection = true)
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
-                @Suppress("DEPRECATION")
-                val data = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
+                val data = IntentCompat.getParcelableExtra(intent, EXTRA_RESULT_DATA, Intent::class.java)
                 if (resultCode == Activity.RESULT_OK && data != null) {
                     val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                     val projection = mpm.getMediaProjection(resultCode, data)
                     if (projection != null) {
-                        val metrics = resources.displayMetrics
+                        val (w, h, dpi) = currentDisplayMetrics()
                         MediaProjectionHolder.attachProjection(
                             projection = projection,
-                            width = metrics.widthPixels,
-                            height = metrics.heightPixels,
-                            densityDpi = metrics.densityDpi
+                            width = w,
+                            height = h,
+                            densityDpi = dpi
                         )
                         val app = application as MobileLabsApplication
-                        app.audioMixerEngine.startCapture(hasMicPermission = true, mediaProjection = projection)
+                        val hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                        app.audioMixerEngine.startCapture(hasMicPermission = hasMic, mediaProjection = projection)
                     }
                 }
             }
@@ -118,15 +139,49 @@ class StreamBroadcastService : Service() {
         return START_STICKY
     }
 
+    private fun currentDisplayMetrics(): Triple<Int, Int, Int> {
+        val dpi = resources.displayMetrics.densityDpi
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val wm = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            val bounds = wm?.currentWindowMetrics?.bounds
+            if (bounds != null && bounds.width() > 0 && bounds.height() > 0) {
+                return Triple(bounds.width(), bounds.height(), dpi)
+            }
+        }
+        val m = resources.displayMetrics
+        return Triple(m.widthPixels, m.heightPixels, dpi)
+    }
+
     private fun promoteForeground(statusText: String, includeMediaProjection: Boolean) {
         val notification = buildNotification(statusText)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            val hasCamera = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            val hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+            var serviceType = 0
             if (includeMediaProjection) {
                 serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             }
-            startForeground(NOTIFICATION_ID, notification, serviceType)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (hasCamera) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                }
+                if (hasMic) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                }
+            }
+
+            val applied = if (serviceType != 0) {
+                runCatching {
+                    startForeground(NOTIFICATION_ID, notification, serviceType)
+                }.isSuccess
+            } else false
+
+            if (!applied && Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(NOTIFICATION_ID, notification)
+            } else if (!applied && serviceType != 0) {
+                runCatching { startForeground(NOTIFICATION_ID, notification, serviceType) }
+            }
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -170,6 +225,7 @@ class StreamBroadcastService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching { displayManager?.unregisterDisplayListener(displayListener) }
         MediaProjectionHolder.release()
         runCatching {
             if (wakeLock?.isHeld == true) wakeLock?.release()

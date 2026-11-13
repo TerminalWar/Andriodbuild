@@ -12,8 +12,11 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
-import android.net.Uri
 import android.util.LruCache
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
+import androidx.core.graphics.withSave
+import androidx.core.net.toUri
 import com.example.data.model.DonationGoalState
 import com.example.data.model.LiveAlertEvent
 import com.example.data.model.OutputOrientation
@@ -21,17 +24,22 @@ import com.example.data.model.SourceType
 import com.example.data.model.StreamChatMessage
 import com.example.data.model.StudioScene
 import com.example.data.model.StudioSource
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
 /**
  * Zero-allocation per-frame scene compositor for hardware MediaCodec Surfaces.
  * Supports proportional aspect-fit / crop-to-fill rendering for tablets & phones,
- * looping Video Overlays, Privacy Shield, Camera zoom/mirror, and full widget rendering.
+ * looping Video Overlays, Privacy Shield, Camera zoom/mirror, real Chroma Key
+ * alpha keying, Stream Uptime & Clock widget, pinned chat banner, and full widget rendering.
  */
 class FrameCompositor(private val context: Context) {
 
-    private val imageCache = LruCache<String, Bitmap>(10)
+    private val imageCache = LruCache<String, Bitmap>(12)
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val framePaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -45,12 +53,17 @@ class FrameCompositor(private val context: Context) {
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
     }
 
-    // Reusable geometry objects to prevent GC pauses during multi-hour broadcasts
+    // Reusable geometry & chroma-key buffers to prevent GC pauses during multi-hour broadcasts
     private val dstRect = RectF()
     private val barRect = RectF()
     private val fillRect = RectF()
+    private val badgeRect = RectF()
     private val clipPath = Path()
     private val drawMatrix = Matrix()
+
+    private var chromaScratchBitmap: Bitmap? = null
+    private var chromaPixelBuffer: IntArray = IntArray(0)
+    private val clockFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     private var cachedGoalKey = ""
     private var cachedGoalShader: LinearGradient? = null
@@ -65,7 +78,10 @@ class FrameCompositor(private val context: Context) {
         activeAlert: LiveAlertEvent?,
         donationGoal: DonationGoalState,
         recentChat: List<StreamChatMessage>,
-        privacyShieldActive: Boolean = false
+        privacyShieldActive: Boolean = false,
+        liveElapsedSec: Long = 0L,
+        currentFpsTelemetry: Float = 0f,
+        pinnedChatMessage: StreamChatMessage? = null
     ) {
         val baseColor = scene?.backdropHex?.toInt() ?: 0xFF0C1520.toInt()
         canvas.drawColor(baseColor)
@@ -127,9 +143,14 @@ class FrameCompositor(private val context: Context) {
                 SourceType.CAMERA -> {
                     val camBmp = MediaProjectionHolder.getLatestCameraBitmap()
                     if (camBmp != null && !camBmp.isRecycled) {
+                        val drawBmp = if (src.chromaKeyEnabled) {
+                            applyChromaKey(camBmp, src.chromaKeyColorHex.toInt(), src.chromaKeyTolerance)
+                        } else {
+                            camBmp
+                        }
                         drawBitmapScaled(
                             canvas = canvas,
-                            bmp = camBmp,
+                            bmp = drawBmp,
                             dst = dstRect,
                             corner = corner,
                             cropToFill = src.cropToFill,
@@ -160,7 +181,12 @@ class FrameCompositor(private val context: Context) {
                 SourceType.IMAGE_OVERLAY -> {
                     val bmp = src.imageUri?.let { loadImageBitmap(it) }
                     if (bmp != null && !bmp.isRecycled) {
-                        drawBitmapScaled(canvas, bmp, dstRect, corner, cropToFill = src.cropToFill, alpha = src.opacity)
+                        val drawBmp = if (src.chromaKeyEnabled) {
+                            applyChromaKey(bmp, src.chromaKeyColorHex.toInt(), src.chromaKeyTolerance)
+                        } else {
+                            bmp
+                        }
+                        drawBitmapScaled(canvas, drawBmp, dstRect, corner, cropToFill = src.cropToFill, alpha = src.opacity)
                     } else {
                         drawPlaceholderTile(canvas, dstRect, corner, 0xFF1B2430.toInt(), src.name)
                     }
@@ -169,7 +195,12 @@ class FrameCompositor(private val context: Context) {
                 SourceType.VIDEO_OVERLAY -> {
                     val vidBmp = src.imageUri?.let { MediaProjectionHolder.getVideoOverlayFrame(it) }
                     if (vidBmp != null && !vidBmp.isRecycled) {
-                        drawBitmapScaled(canvas, vidBmp, dstRect, corner, cropToFill = src.cropToFill, alpha = src.opacity)
+                        val drawBmp = if (src.chromaKeyEnabled) {
+                            applyChromaKey(vidBmp, src.chromaKeyColorHex.toInt(), src.chromaKeyTolerance)
+                        } else {
+                            vidBmp
+                        }
+                        drawBitmapScaled(canvas, drawBmp, dstRect, corner, cropToFill = src.cropToFill, alpha = src.opacity)
                     } else {
                         drawPlaceholderTile(canvas, dstRect, corner, 0xFF14212E.toInt(), "VIDEO OVERLAY: ${src.name}")
                     }
@@ -193,6 +224,46 @@ class FrameCompositor(private val context: Context) {
                     lines.forEachIndexed { idx, line ->
                         canvas.drawText(line, centerX, firstY + idx * textPaint.textSize * 1.25f, textPaint)
                     }
+                }
+
+                SourceType.STREAM_TIMER -> {
+                    framePaint.style = Paint.Style.FILL
+                    framePaint.color = 0xD40D131B.toInt()
+                    canvas.drawRoundRect(dstRect, corner, corner, framePaint)
+                    framePaint.style = Paint.Style.STROKE
+                    framePaint.strokeWidth = 2f
+                    framePaint.color = src.accentColorHex.toInt()
+                    canvas.drawRoundRect(dstRect, corner, corner, framePaint)
+                    framePaint.style = Paint.Style.FILL
+
+                    // Status dot + elapsed uptime + local clock
+                    val dotRadius = (dstRect.height() * 0.14f).coerceIn(5f, 11f)
+                    framePaint.color = if (liveElapsedSec > 0L) 0xFFFF4557.toInt() else src.accentColorHex.toInt()
+                    canvas.drawCircle(dstRect.left + dotRadius * 2f + 6f, dstRect.centerY(), dotRadius, framePaint)
+
+                    val h = liveElapsedSec / 3600
+                    val m = (liveElapsedSec % 3600) / 60
+                    val s = liveElapsedSec % 60
+                    val uptime = String.format(Locale.US, "%02d:%02d:%02d", h, m, s)
+                    val prefix = src.textContent.ifBlank { if (liveElapsedSec > 0L) "LIVE" else "UPTIME" }
+
+                    textPaint.textAlign = Paint.Align.LEFT
+                    textPaint.textSize = (dstRect.height() * 0.34f).coerceIn(14f, 30f)
+                    canvas.drawText(
+                        "$prefix  $uptime",
+                        dstRect.left + dotRadius * 3.8f + 10f,
+                        dstRect.centerY() + textPaint.textSize * 0.32f,
+                        textPaint
+                    )
+
+                    subTextPaint.textAlign = Paint.Align.RIGHT
+                    subTextPaint.textSize = (dstRect.height() * 0.24f).coerceIn(11f, 20f)
+                    val rightInfo = if (currentFpsTelemetry > 0f) {
+                        "${currentFpsTelemetry.toInt()} FPS • ${clockFormat.format(Date())}"
+                    } else {
+                        clockFormat.format(Date())
+                    }
+                    canvas.drawText(rightInfo, dstRect.right - 14f, dstRect.centerY() + subTextPaint.textSize * 0.32f, subTextPaint)
                 }
 
                 SourceType.ALERTBOX -> {
@@ -270,8 +341,23 @@ class FrameCompositor(private val context: Context) {
                     subTextPaint.textAlign = Paint.Align.LEFT
                     val lineSize = (dstRect.height() * 0.085f).coerceIn(12f, 20f)
                     subTextPaint.textSize = lineSize
-                    val lines = recentChat.takeLast(6)
                     var y = dstRect.top + lineSize + 10f
+
+                    if (pinnedChatMessage != null && dstRect.height() > lineSize * 3f) {
+                        badgeRect.set(dstRect.left + 6f, dstRect.top + 6f, dstRect.right - 6f, dstRect.top + lineSize * 1.9f)
+                        framePaint.color = 0x3331C3A2
+                        canvas.drawRoundRect(badgeRect, 6f, 6f, framePaint)
+                        subTextPaint.color = 0xFF56E3C2.toInt()
+                        canvas.drawText(
+                            "PIN ${pinnedChatMessage.username}: ${pinnedChatMessage.message.take(36)}",
+                            dstRect.left + 12f,
+                            dstRect.top + lineSize * 1.3f,
+                            subTextPaint
+                        )
+                        y = badgeRect.bottom + lineSize + 4f
+                    }
+
+                    val lines = recentChat.takeLast(6)
                     for (msg in lines) {
                         if (y > dstRect.bottom - 8f) break
                         subTextPaint.color = msg.nameColorHex.toInt()
@@ -290,6 +376,63 @@ class FrameCompositor(private val context: Context) {
                 SourceType.FOLDER -> Unit
             }
         }
+    }
+
+    /**
+     * Real-time Chroma Key processor reusing a single scratch bitmap & pixel array.
+     * Supports standard broadcast Green Screen (#00B140) or Blue Screen (#0047AB).
+     */
+    private fun applyChromaKey(source: Bitmap, keyColor: Int, tolerance: Float): Bitmap {
+        val sw = source.width
+        val sh = source.height
+        if (sw <= 1 || sh <= 1) return source
+
+        // Downscale if huge to guarantee <2ms frame budgets
+        val scale = if (sw > 480) 480f / sw.toFloat() else 1f
+        val tw = max(2, (sw * scale).toInt())
+        val th = max(2, (sh * scale).toInt())
+
+        val scratch = chromaScratchBitmap?.takeIf {
+            !it.isRecycled && it.width == tw && it.height == th
+        } ?: createBitmap(tw, th).also {
+            chromaScratchBitmap = it
+        }
+
+        val scaledInput = if (tw != sw || th != sh) {
+            source.scale(tw, th, false)
+        } else {
+            source
+        }
+
+        val total = tw * th
+        if (chromaPixelBuffer.size < total) {
+            chromaPixelBuffer = IntArray(total)
+        }
+        scaledInput.getPixels(chromaPixelBuffer, 0, tw, 0, 0, tw, th)
+
+        val kr = Color.red(keyColor)
+        val kg = Color.green(keyColor)
+        val kb = Color.blue(keyColor)
+        val tolPx = (tolerance.coerceIn(0.05f, 0.7f) * 255f).toInt()
+        val featherPx = tolPx + 38
+
+        for (i in 0 until total) {
+            val c = chromaPixelBuffer[i]
+            val r = (c ushr 16) and 0xFF
+            val g = (c ushr 8) and 0xFF
+            val b = c and 0xFF
+            val dist = (abs(r - kr) + abs(g - kg) + abs(b - kb)) / 3
+            if (dist < tolPx) {
+                chromaPixelBuffer[i] = 0x00000000
+            } else if (dist < featherPx) {
+                val origA = (c ushr 24) and 0xFF
+                val alphaFactor = (dist - tolPx).toFloat() / 38f
+                val newA = (origA * alphaFactor).toInt().coerceIn(0, 255)
+                chromaPixelBuffer[i] = (c and 0x00FFFFFF) or (newA shl 24)
+            }
+        }
+        scratch.setPixels(chromaPixelBuffer, 0, tw, 0, 0, tw, th)
+        return scratch
     }
 
     private fun drawBitmapScaled(
@@ -321,14 +464,14 @@ class FrameCompositor(private val context: Context) {
         drawMatrix.postScale(baseScale, baseScale)
         drawMatrix.postTranslate(dx, dy)
 
-        canvas.save()
-        clipPath.rewind()
-        clipPath.addRoundRect(dst, corner, corner, Path.Direction.CW)
-        canvas.clipPath(clipPath)
-        bitmapPaint.alpha = (alpha * 255f).toInt().coerceIn(0, 255)
-        canvas.drawBitmap(bmp, drawMatrix, bitmapPaint)
-        bitmapPaint.alpha = 255
-        canvas.restore()
+        canvas.withSave {
+            clipPath.rewind()
+            clipPath.addRoundRect(dst, corner, corner, Path.Direction.CW)
+            clipPath(clipPath)
+            bitmapPaint.alpha = (alpha * 255f).toInt().coerceIn(0, 255)
+            drawBitmap(bmp, drawMatrix, bitmapPaint)
+            bitmapPaint.alpha = 255
+        }
     }
 
     private fun drawPlaceholderTile(
@@ -354,7 +497,7 @@ class FrameCompositor(private val context: Context) {
     private fun loadImageBitmap(uriString: String): Bitmap? {
         imageCache.get(uriString)?.let { if (!it.isRecycled) return it }
         val bmp = runCatching {
-            val uri = Uri.parse(uriString)
+            val uri = uriString.toUri()
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
             val maxDim = max(opts.outWidth, opts.outHeight)

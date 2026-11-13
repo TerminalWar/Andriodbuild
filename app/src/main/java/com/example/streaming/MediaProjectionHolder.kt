@@ -2,13 +2,16 @@ package com.example.streaming
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.os.Handler
 import android.os.HandlerThread
+import androidx.core.graphics.createBitmap
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,13 +26,16 @@ object MediaProjectionHolder {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var handlerThread: HandlerThread? = null
+    private var lastCaptureW = 0
+    private var lastCaptureH = 0
 
-    // Double-buffered reusable screen bitmaps to eliminate GC churn over multi-hour streams
+    // Triple-buffered reusable screen bitmaps to eliminate GC churn & recycled-bitmap races
     private var screenBackBitmap: Bitmap? = null
     private var screenFrontBitmap: Bitmap? = null
+    private var screenSpareBitmap: Bitmap? = null
     private var rawCopyBitmap: Bitmap? = null
-    private val screenCanvas = android.graphics.Canvas()
-    private val captureRect = android.graphics.Rect()
+    private val screenCanvas = Canvas()
+    private val captureRect = Rect()
     private val latestScreenBitmap = AtomicReference<Bitmap?>(null)
 
     private val latestCameraBitmap = AtomicReference<Bitmap?>(null)
@@ -43,10 +49,7 @@ object MediaProjectionHolder {
     fun getLatestScreenBitmap(): Bitmap? = latestScreenBitmap.get()
 
     fun updateCameraBitmap(bitmap: Bitmap?) {
-        val prev = latestCameraBitmap.getAndSet(bitmap)
-        if (prev != null && prev !== bitmap && !prev.isRecycled) {
-            // GC handles small camera previews safely while UI may still reference prev for 1 frame
-        }
+        latestCameraBitmap.set(bitmap)
     }
 
     fun getLatestCameraBitmap(): Bitmap? = latestCameraBitmap.get()
@@ -76,51 +79,13 @@ object MediaProjectionHolder {
         handlerThread = thread
         val handler = Handler(thread.looper)
 
-        // Proportional scaling preserving exact tablet/phone aspect ratio (even dimensions for H.264)
         val (captureW, captureH) = computeCaptureSize(width, height)
+        lastCaptureW = captureW
+        lastCaptureH = captureH
         captureRect.set(0, 0, captureW, captureH)
 
-        val reader = ImageReader.newInstance(captureW, captureH, PixelFormat.RGBA_8888, 3)
+        val reader = createImageReader(captureW, captureH, handler)
         imageReader = reader
-
-        reader.setOnImageAvailableListener({ r ->
-            val image = runCatching { r.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
-            try {
-                val plane = image.planes[0]
-                val buffer = plane.buffer
-                val pixelStride = plane.pixelStride
-                val rowStride = plane.rowStride
-                val paddedWidth = rowStride / pixelStride
-
-                if (rawCopyBitmap == null || rawCopyBitmap?.width != paddedWidth || rawCopyBitmap?.height != captureH) {
-                    rawCopyBitmap?.recycle()
-                    rawCopyBitmap = Bitmap.createBitmap(paddedWidth, captureH, Bitmap.Config.ARGB_8888)
-                }
-                rawCopyBitmap?.copyPixelsFromBuffer(buffer)
-
-                if (screenBackBitmap == null || screenBackBitmap?.width != captureW || screenBackBitmap?.height != captureH) {
-                    screenBackBitmap?.recycle()
-                    screenBackBitmap = Bitmap.createBitmap(captureW, captureH, Bitmap.Config.ARGB_8888)
-                }
-                if (screenFrontBitmap == null || screenFrontBitmap?.width != captureW || screenFrontBitmap?.height != captureH) {
-                    screenFrontBitmap?.recycle()
-                    screenFrontBitmap = Bitmap.createBitmap(captureW, captureH, Bitmap.Config.ARGB_8888)
-                }
-
-                val target = screenBackBitmap!!
-                val src = rawCopyBitmap!!
-                screenCanvas.setBitmap(target)
-                screenCanvas.drawBitmap(src, captureRect, captureRect, null)
-                // Swap back & front pointers cleanly
-                screenBackBitmap = screenFrontBitmap
-                screenFrontBitmap = target
-                latestScreenBitmap.set(target)
-            } catch (_: Throwable) {
-                // Non-fatal transient frame drop
-            } finally {
-                image.close()
-            }
-        }, handler)
 
         projection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
@@ -141,9 +106,88 @@ object MediaProjectionHolder {
         _isScreenCapturing.value = true
     }
 
+    @SuppressLint("WrongConstant")
+    fun resizeVirtualDisplay(width: Int, height: Int, densityDpi: Int) {
+        val display = virtualDisplay ?: return
+        val thread = handlerThread ?: return
+        if (!thread.isAlive || !_isScreenCapturing.value) return
+
+        val (captureW, captureH) = computeCaptureSize(width, height)
+        if (captureW == lastCaptureW && captureH == lastCaptureH) return
+
+        lastCaptureW = captureW
+        lastCaptureH = captureH
+        captureRect.set(0, 0, captureW, captureH)
+
+        val handler = Handler(thread.looper)
+        val oldReader = imageReader
+        val newReader = createImageReader(captureW, captureH, handler)
+        imageReader = newReader
+        latestScreenBitmap.set(null)
+
+        runCatching {
+            display.resize(captureW, captureH, densityDpi)
+            display.surface = newReader.surface
+        }
+        runCatching { oldReader?.close() }
+    }
+
+    @SuppressLint("WrongConstant")
+    private fun createImageReader(captureW: Int, captureH: Int, handler: Handler): ImageReader {
+        return ImageReader.newInstance(captureW, captureH, PixelFormat.RGBA_8888, 3).apply {
+            setOnImageAvailableListener({ r ->
+                val image = runCatching { r.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
+                try {
+                    val plane = image.planes[0]
+                    val buffer = plane.buffer
+                    val pixelStride = plane.pixelStride.coerceAtLeast(4)
+                    val rowStride = plane.rowStride
+                    val paddedWidth = rowStride / pixelStride
+
+                    if (screenBackBitmap == null || screenBackBitmap?.width != captureW || screenBackBitmap?.height != captureH) {
+                        screenBackBitmap = createBitmap(captureW, captureH)
+                    }
+                    if (screenFrontBitmap == null || screenFrontBitmap?.width != captureW || screenFrontBitmap?.height != captureH) {
+                        screenFrontBitmap = createBitmap(captureW, captureH)
+                    }
+                    if (screenSpareBitmap == null || screenSpareBitmap?.width != captureW || screenSpareBitmap?.height != captureH) {
+                        screenSpareBitmap = createBitmap(captureW, captureH)
+                    }
+
+                    val target = screenBackBitmap!!
+                    if (paddedWidth == captureW) {
+                        // Zero-copy fast path directly into pooled back bitmap
+                        target.copyPixelsFromBuffer(buffer)
+                    } else {
+                        if (rawCopyBitmap == null || rawCopyBitmap?.width != paddedWidth || rawCopyBitmap?.height != captureH) {
+                            rawCopyBitmap = createBitmap(paddedWidth, captureH)
+                        }
+                        val src = rawCopyBitmap!!
+                        src.copyPixelsFromBuffer(buffer)
+                        screenCanvas.setBitmap(target)
+                        screenCanvas.drawBitmap(src, captureRect, captureRect, null)
+                    }
+
+                    // Rotate 3 buffers: back -> latest(front) -> spare -> back (prevents recycled-bitmap race)
+                    val oldFront = screenFrontBitmap
+                    screenFrontBitmap = target
+                    screenBackBitmap = screenSpareBitmap
+                    screenSpareBitmap = oldFront
+                    latestScreenBitmap.set(target)
+                } catch (_: Throwable) {
+                    // Transient frame drop
+                } finally {
+                    image.close()
+                }
+            }, handler)
+        }
+    }
+
     fun release() {
         _isScreenCapturing.value = false
         latestScreenBitmap.set(null)
+        lastCaptureW = 0
+        lastCaptureH = 0
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
         runCatching { imageReader?.close() }
@@ -152,11 +196,9 @@ object MediaProjectionHolder {
         mediaProjection = null
         runCatching { handlerThread?.quitSafely() }
         handlerThread = null
-        runCatching { rawCopyBitmap?.recycle() }
-        runCatching { screenBackBitmap?.recycle() }
-        runCatching { screenFrontBitmap?.recycle() }
         rawCopyBitmap = null
         screenBackBitmap = null
         screenFrontBitmap = null
+        screenSpareBitmap = null
     }
 }

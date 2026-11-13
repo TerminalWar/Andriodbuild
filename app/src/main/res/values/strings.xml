@@ -1,21 +1,5 @@
 <resources>
     <string name="app_name">mobileLabs</string>
-    <string name="studio_mode">Studio Mode</string>
-    <string name="horizontal_output">Horizontal Output</string>
-    <string name="vertical_output">Vertical Output</string>
-    <string name="manage_dual_output">Manage Dual Output</string>
-    <string name="scenes">Scenes</string>
-    <string name="sources">Sources</string>
-    <string name="audio_mixer">Audio Mixer</string>
-    <string name="stream_chat">Stream Chat</string>
-    <string name="go_live">Go Live</string>
-    <string name="end_stream">End Stream</string>
-    <string name="test_widgets">Test Widgets</string>
-    <string name="record">Record</string>
-    <string name="replay_clip">Save Replay</string>
-    <string name="transition_cut">Cut</string>
-    <string name="transition_fade">Fade</string>
-    <string name="transition_slide">Slide</string>
     <string name="notification_channel_stream">Broadcast &amp; Screen Capture</string>
     <string name="notification_channel_stream_desc">Keeps live RTMP streaming, camera, microphone, and screen capture active</string>
 </resources>

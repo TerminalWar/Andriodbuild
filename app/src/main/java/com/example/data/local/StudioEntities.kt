@@ -55,7 +55,11 @@ data class StudioSourceEntity(
     val cameraZoom: Float = 1.0f,
     val cropToFill: Boolean = true,
     val opacity: Float = 1f,
-    val cornerRadiusDp: Int = 10
+    val cornerRadiusDp: Int = 10,
+    val chromaKeyEnabled: Boolean = false,
+    val chromaKeyColorHex: Long = 0xFF00B140,
+    val chromaKeyTolerance: Float = 0.28f,
+    val videoSpeed: Float = 1.0f
 )
 
 @Entity(tableName = "audio_channels")
@@ -130,7 +134,11 @@ fun StudioSourceEntity.toDomain() = StudioSource(
     cameraZoom = cameraZoom,
     cropToFill = cropToFill,
     opacity = opacity,
-    cornerRadiusDp = cornerRadiusDp
+    cornerRadiusDp = cornerRadiusDp,
+    chromaKeyEnabled = chromaKeyEnabled,
+    chromaKeyColorHex = chromaKeyColorHex,
+    chromaKeyTolerance = chromaKeyTolerance,
+    videoSpeed = videoSpeed
 )
 
 fun StudioSource.toEntity() = StudioSourceEntity(
@@ -159,7 +167,11 @@ fun StudioSource.toEntity() = StudioSourceEntity(
     cameraZoom = cameraZoom,
     cropToFill = cropToFill,
     opacity = opacity,
-    cornerRadiusDp = cornerRadiusDp
+    cornerRadiusDp = cornerRadiusDp,
+    chromaKeyEnabled = chromaKeyEnabled,
+    chromaKeyColorHex = chromaKeyColorHex,
+    chromaKeyTolerance = chromaKeyTolerance,
+    videoSpeed = videoSpeed
 )
 
 fun AudioChannelEntity.toDomain() = AudioChannelConfig(

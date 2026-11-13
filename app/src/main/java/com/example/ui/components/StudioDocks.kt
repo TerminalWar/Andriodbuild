@@ -33,7 +33,9 @@ import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.CropSquare
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DesktopWindows
@@ -45,10 +47,12 @@ import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.TextFields
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
@@ -65,6 +69,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -126,8 +131,11 @@ fun ScenesDock(
     onAddCollectionClick: () -> Unit,
     onSelectScene: (Long) -> Unit,
     onAddSceneClick: () -> Unit,
+    onRenameSceneClick: (StudioScene) -> Unit,
+    onDuplicateScene: (StudioScene) -> Unit,
     onDeleteScene: (Long) -> Unit,
     onSelectTransition: (TransitionType) -> Unit,
+    onDropMarker: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showCollectionMenu by remember { mutableStateOf(false) }
@@ -149,7 +157,7 @@ fun ScenesDock(
                 .background(StudioHeader)
                 .padding(horizontal = 8.dp, vertical = 4.dp)
         ) {
-            Box {
+            Box(modifier = Modifier.weight(1f)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -194,7 +202,7 @@ fun ScenesDock(
                         shape = RoundedCornerShape(4.dp),
                         modifier = Modifier
                             .clickable { showTransitionMenu = true }
-                            .padding(end = 4.dp)
+                            .padding(end = 3.dp)
                     ) {
                         Text(
                             text = selectedTransition.label,
@@ -217,8 +225,15 @@ fun ScenesDock(
                 }
 
                 IconButton(
+                    onClick = onDropMarker,
+                    modifier = Modifier.size(30.dp).testTag("drop_marker_button")
+                ) {
+                    Icon(Icons.Rounded.BookmarkAdd, contentDescription = "Drop Stream Marker (F8)", tint = RecordAmber, modifier = Modifier.size(16.dp))
+                }
+
+                IconButton(
                     onClick = onAddSceneClick,
-                    modifier = Modifier.size(32.dp).testTag("add_scene_button")
+                    modifier = Modifier.size(30.dp).testTag("add_scene_button")
                 ) {
                     Icon(Icons.Rounded.Add, contentDescription = "Add scene", tint = MintAccentBright, modifier = Modifier.size(18.dp))
                 }
@@ -238,7 +253,7 @@ fun ScenesDock(
                         .fillMaxWidth()
                         .background(if (isSelected) StudioElevated else Color.Transparent)
                         .clickable { onSelectScene(scene.id) }
-                        .padding(horizontal = 10.dp, vertical = 7.dp)
+                        .padding(horizontal = 8.dp, vertical = 7.dp)
                         .testTag("scene_item_${scene.id}")
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
@@ -248,7 +263,7 @@ fun ScenesDock(
                                 .height(16.dp)
                                 .background(if (isSelected) MintAccent else Color.Transparent, RoundedCornerShape(2.dp))
                         )
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(7.dp))
                         Text(
                             text = scene.name,
                             style = MaterialTheme.typography.bodyMedium,
@@ -259,24 +274,41 @@ fun ScenesDock(
                             modifier = Modifier.weight(1f)
                         )
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         if (idx < 7) {
                             Text(
                                 text = "F${idx + 1}",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = TextMuted.copy(alpha = 0.7f),
-                                modifier = Modifier.padding(end = 6.dp)
+                                color = TextMuted.copy(alpha = 0.7f)
                             )
                         }
-                        if (scenes.size > 1 && isSelected) {
+                        if (isSelected) {
                             Icon(
-                                Icons.Rounded.DeleteOutline,
-                                contentDescription = "Delete scene",
-                                tint = TextMuted,
+                                Icons.Rounded.Edit,
+                                contentDescription = "Rename scene",
+                                tint = TextSecondary,
                                 modifier = Modifier
-                                    .size(16.dp)
-                                    .clickable { onDeleteScene(scene.id) }
+                                    .size(15.dp)
+                                    .clickable { onRenameSceneClick(scene) }
                             )
+                            Icon(
+                                Icons.Rounded.ContentCopy,
+                                contentDescription = "Duplicate scene",
+                                tint = MintAccentBright,
+                                modifier = Modifier
+                                    .size(15.dp)
+                                    .clickable { onDuplicateScene(scene) }
+                            )
+                            if (scenes.size > 1) {
+                                Icon(
+                                    Icons.Rounded.DeleteOutline,
+                                    contentDescription = "Delete scene",
+                                    tint = LiveCrimsonBright,
+                                    modifier = Modifier
+                                        .size(15.dp)
+                                        .clickable { onDeleteScene(scene.id) }
+                                )
+                            }
                         }
                     }
                 }
@@ -294,6 +326,7 @@ fun SourcesDock(
     onAddSourceClick: () -> Unit,
     onToggleVisibility: (StudioSource, OutputOrientation) -> Unit,
     onToggleLock: (StudioSource) -> Unit,
+    onDuplicateSource: (StudioSource) -> Unit,
     onMoveSourceOrder: (Long, Boolean) -> Unit,
     onEditSourceProperties: (StudioSource) -> Unit,
     modifier: Modifier = Modifier
@@ -310,7 +343,7 @@ fun SourcesDock(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(StudioHeader)
-                .padding(horizontal = 10.dp, vertical = 4.dp)
+                .padding(horizontal = 8.dp, vertical = 4.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Sources", style = MaterialTheme.typography.titleSmall, color = TextPrimary)
@@ -334,13 +367,16 @@ fun SourcesDock(
                     IconButton(onClick = { onMoveSourceOrder(selected.id, false) }, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Rounded.ArrowDownward, contentDescription = "Move source down", tint = TextSecondary, modifier = Modifier.size(16.dp))
                     }
+                    IconButton(onClick = { onDuplicateSource(selected) }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Rounded.ContentCopy, contentDescription = "Duplicate source", tint = TextSecondary, modifier = Modifier.size(15.dp))
+                    }
                     IconButton(onClick = { onEditSourceProperties(selected) }, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Rounded.Settings, contentDescription = "Source properties", tint = MintAccentBright, modifier = Modifier.size(16.dp))
                     }
                 }
                 IconButton(
                     onClick = onAddSourceClick,
-                    modifier = Modifier.size(32.dp).testTag("add_source_button")
+                    modifier = Modifier.size(30.dp).testTag("add_source_button")
                 ) {
                     Icon(Icons.Rounded.Add, contentDescription = "Add source", tint = MintAccentBright, modifier = Modifier.size(18.dp))
                 }
@@ -363,7 +399,7 @@ fun SourcesDock(
                     } else {
                         src.isVisibleVertical
                     }
-                    val indent = if (src.parentFolderId != null) 18.dp else 0.dp
+                    val indent = if (src.parentFolderId != null) 16.dp else 0.dp
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -380,7 +416,7 @@ fun SourcesDock(
                             tint = if (isSelected) MintAccent else TextSecondary,
                             modifier = Modifier.size(16.dp)
                         )
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(7.dp))
                         Text(
                             text = src.name,
                             style = MaterialTheme.typography.bodyMedium,
@@ -389,6 +425,12 @@ fun SourcesDock(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
+                        if (src.chromaKeyEnabled) {
+                            Surface(color = MintAccent.copy(alpha = 0.2f), shape = RoundedCornerShape(3.dp)) {
+                                Text("CK", color = MintAccentBright, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                            }
+                            Spacer(Modifier.width(4.dp))
+                        }
                         Icon(
                             imageVector = if (editingOrientation == OutputOrientation.HORIZONTAL) Icons.Rounded.DesktopWindows else Icons.Rounded.Smartphone,
                             contentDescription = null,
@@ -495,24 +537,34 @@ fun AudioMixerDock(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                             Text(
                                 text = ch.name,
                                 style = MaterialTheme.typography.bodySmall,
                                 fontWeight = FontWeight.SemiBold,
-                                color = TextPrimary
+                                color = TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             if (ch.noiseGateEnabled) {
-                                Spacer(Modifier.width(6.dp))
-                                Surface(color = MintAccent.copy(alpha = 0.15f), shape = RoundedCornerShape(3.dp)) {
-                                    Text("GATE", color = MintAccent, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
-                                }
+                                Spacer(Modifier.width(4.dp))
+                                SmallBadgePill("GATE", MintAccent)
+                            }
+                            if (ch.monitorEnabled) {
+                                Spacer(Modifier.width(4.dp))
+                                SmallBadgePill("MON", Color(0xFF38BDF8))
                             }
                             if (ch.syncOffsetMs != 0) {
                                 Spacer(Modifier.width(4.dp))
-                                Surface(color = RecordAmber.copy(alpha = 0.15f), shape = RoundedCornerShape(3.dp)) {
-                                    Text("${ch.syncOffsetMs}ms", color = RecordAmber, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
-                                }
+                                SmallBadgePill("${ch.syncOffsetMs}ms", RecordAmber)
+                            }
+                            if (meter?.isDucking == true) {
+                                Spacer(Modifier.width(4.dp))
+                                SmallBadgePill("DUCK", RecordAmber)
+                            }
+                            if (meter?.isClipping == true) {
+                                Spacer(Modifier.width(4.dp))
+                                SmallBadgePill("CLIP", LiveCrimsonBright)
                             }
                         }
                         Text(
@@ -526,7 +578,7 @@ fun AudioMixerDock(
 
                     AudioVuMeterBar(
                         rmsDb = if (ch.isMuted) -60f else (meter?.rmsDb ?: -60f),
-                        peakDb = if (ch.isMuted) -60f else (meter?.peakDb ?: -60f),
+                        peakHoldDb = if (ch.isMuted) -60f else (meter?.peakHoldDb ?: meter?.peakDb ?: -60f),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(8.dp)
@@ -577,19 +629,32 @@ fun AudioMixerDock(
 }
 
 @Composable
+private fun SmallBadgePill(text: String, color: Color) {
+    Surface(color = color.copy(alpha = 0.16f), shape = RoundedCornerShape(3.dp)) {
+        Text(
+            text = text,
+            color = color,
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+        )
+    }
+}
+
+@Composable
 private fun AudioVuMeterBar(
     rmsDb: Float,
-    peakDb: Float,
+    peakHoldDb: Float,
     modifier: Modifier = Modifier
 ) {
     val rmsNorm = ((rmsDb + 60f) / 60f).coerceIn(0f, 1f)
-    val peakNorm = ((peakDb + 60f) / 60f).coerceIn(0f, 1f)
+    val peakNorm = ((peakHoldDb + 60f) / 60f).coerceIn(0f, 1f)
 
     Canvas(modifier = modifier.clip(RoundedCornerShape(3.dp)).background(VuTrackBg)) {
         val w = size.width
         val h = size.height
 
-        val totalSegments = 30
+        val totalSegments = 32
         val gap = 2f
         val segW = (w - gap * (totalSegments - 1)) / totalSegments
         val activeSegments = (rmsNorm * totalSegments).toInt()
@@ -620,12 +685,14 @@ fun ChatDock(
     twitchChannel: String,
     chatStatus: ChatConnectionStatus,
     messages: List<StreamChatMessage>,
+    pinnedMessage: StreamChatMessage?,
     onEditTitleClick: () -> Unit,
     onConnectTwitchChannel: (String) -> Unit,
     onSendLocalMessage: (String) -> Unit,
+    onPinMessage: (StreamChatMessage?) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var selectedTab by remember { mutableStateOf(0) }
+    var selectedTab by remember { mutableIntStateOf(0) }
     var channelInput by remember(twitchChannel) { mutableStateOf(twitchChannel) }
     var chatInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -708,7 +775,7 @@ fun ChatDock(
                 .fillMaxWidth()
                 .border(1.dp, StudioBorder)
         ) {
-            listOf("Twitch", "Multistream").forEachIndexed { idx, label ->
+            listOf("Twitch", "All Chat", "Activity").forEachIndexed { idx, label ->
                 val active = selectedTab == idx
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -790,11 +857,33 @@ fun ChatDock(
             }
         }
 
+        if (pinnedMessage != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MintAccent.copy(alpha = 0.14f))
+                    .clickable { onPinMessage(null) }
+                    .padding(horizontal = 8.dp, vertical = 5.dp)
+            ) {
+                Icon(Icons.Rounded.PushPin, contentDescription = "Unpin message", tint = MintAccentBright, modifier = Modifier.size(13.dp))
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    text = "Pinned: ${pinnedMessage.username}: ${pinnedMessage.message}",
+                    color = MintAccentBright,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
         val filtered = remember(messages, selectedTab) {
-            if (selectedTab == 0) {
-                messages.filter { it.platform == ChatPlatform.TWITCH || it.platform == ChatPlatform.SYSTEM }
-            } else {
-                messages
+            when (selectedTab) {
+                0 -> messages.filter { it.platform == ChatPlatform.TWITCH || it.platform == ChatPlatform.SYSTEM }
+                2 -> messages.filter { it.badge == "SUB" || it.badge == "HOST" || it.platform == ChatPlatform.SYSTEM }
+                else -> messages
             }
         }
 
@@ -808,9 +897,15 @@ fun ChatDock(
             verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             items(filtered, key = { it.id }) { msg ->
+                val isPinned = pinnedMessage?.id == msg.id
                 Row(
                     verticalAlignment = Alignment.Top,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (isPinned) MintAccent.copy(alpha = 0.12f) else Color.Transparent)
+                        .clickable { onPinMessage(msg) }
+                        .padding(vertical = 2.dp, horizontal = 2.dp)
                 ) {
                     Surface(
                         color = Color(msg.platform.colorHex).copy(alpha = 0.2f),
@@ -834,7 +929,8 @@ fun ChatDock(
                                 append(msg.message)
                             }
                         },
-                        style = MaterialTheme.typography.bodySmall
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
@@ -861,7 +957,7 @@ fun ChatDock(
                             .padding(horizontal = 8.dp, vertical = 6.dp)
                     ) {
                         if (chatInput.isEmpty()) {
-                            Text("Send host pin / test chat...", color = TextMuted, fontSize = 11.sp)
+                            Text("Send host pin / tap msg to pin...", color = TextMuted, fontSize = 11.sp)
                         }
                         inner()
                     }
@@ -890,6 +986,7 @@ fun sourceTypeIcon(type: SourceType) = when (type) {
     SourceType.VIDEO_OVERLAY -> Icons.Rounded.Movie
     SourceType.IMAGE_OVERLAY -> Icons.Rounded.Image
     SourceType.TEXT_BANNER -> Icons.Rounded.TextFields
+    SourceType.STREAM_TIMER -> Icons.Rounded.Timer
     SourceType.ALERTBOX -> Icons.Rounded.AutoAwesome
     SourceType.DONATION_GOAL -> Icons.AutoMirrored.Rounded.TrendingUp
     SourceType.CHATBOX -> Icons.Rounded.ChatBubbleOutline

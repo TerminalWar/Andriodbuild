@@ -65,13 +65,14 @@ class TwitchIrcChatClient {
             .url("wss://irc-ws.chat.twitch.tv:443")
             .build()
 
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(ws: WebSocket, response: Response) {
+        val socketListener = object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (this@TwitchIrcChatClient.webSocket !== webSocket) return
                 val anonNick = "justinfan${Random.nextInt(10000, 99999)}"
-                ws.send("CAP REQ :twitch.tv/tags twitch.tv/commands")
-                ws.send("PASS SCHMOOPIIE")
-                ws.send("NICK $anonNick")
-                ws.send("JOIN #$cleanChannel")
+                webSocket.send("CAP REQ :twitch.tv/tags twitch.tv/commands")
+                webSocket.send("PASS SCHMOOPIIE")
+                webSocket.send("NICK $anonNick")
+                webSocket.send("JOIN #$cleanChannel")
                 _status.value = ChatConnectionStatus.CONNECTED
                 scope.launch {
                     _messages.emit(
@@ -86,18 +87,20 @@ class TwitchIrcChatClient {
                 }
             }
 
-            override fun onMessage(ws: WebSocket, text: String) {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                if (this@TwitchIrcChatClient.webSocket !== webSocket) return
                 text.split("\r\n").forEach { line ->
                     if (line.isBlank()) return@forEach
                     if (line.startsWith("PING")) {
-                        ws.send(line.replaceFirst("PING", "PONG"))
+                        webSocket.send(line.replaceFirst("PING", "PONG"))
                     } else {
                         parseIrcLine(line)
                     }
                 }
             }
 
-            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (this@TwitchIrcChatClient.webSocket !== webSocket) return
                 _status.value = ChatConnectionStatus.ERROR
                 scope.launch {
                     _messages.emit(
@@ -112,15 +115,18 @@ class TwitchIrcChatClient {
                 }
             }
 
-            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (this@TwitchIrcChatClient.webSocket !== webSocket) return
                 _status.value = ChatConnectionStatus.DISCONNECTED
             }
-        })
+        }
+        webSocket = client.newWebSocket(request, socketListener)
     }
 
     fun disconnect() {
-        webSocket?.close(1000, "Client disconnected")
+        val old = webSocket
         webSocket = null
+        old?.close(1000, "Client disconnected")
         currentChannel = ""
         _status.value = ChatConnectionStatus.DISCONNECTED
     }

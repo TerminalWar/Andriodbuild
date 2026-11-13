@@ -2,8 +2,8 @@ package com.example.ui.components
 
 import android.graphics.Bitmap
 import android.graphics.Matrix
-import android.net.Uri
 import android.view.ViewGroup
+import androidx.core.net.toUri
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -22,6 +22,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -37,22 +38,34 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Cameraswitch
 import androidx.compose.material.icons.rounded.CastConnected
+import androidx.compose.material.icons.rounded.CenterFocusStrong
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.OpenInFull
+import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -71,6 +84,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -101,10 +116,13 @@ import com.example.ui.theme.MintAccentBright
 import com.example.ui.theme.RecordAmber
 import com.example.ui.theme.StudioBorder
 import com.example.ui.theme.StudioDock
+import com.example.ui.theme.StudioElevated
 import com.example.ui.theme.StudioHeader
 import com.example.ui.theme.StudioVoid
+import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.viewmodel.TransformPreset
 import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -115,6 +133,7 @@ fun CanvasPreviewStage(
     verticalEnabled: Boolean,
     studioModeEnabled: Boolean,
     privacyShieldActive: Boolean,
+    isFullscreenPreview: Boolean,
     editingOrientation: OutputOrientation,
     programScene: StudioScene?,
     previewScene: StudioScene?,
@@ -125,234 +144,411 @@ fun CanvasPreviewStage(
     activeAlert: LiveAlertEvent?,
     donationGoal: DonationGoalState,
     recentChat: List<StreamChatMessage>,
+    pinnedChatMessage: StreamChatMessage?,
+    liveElapsedSeconds: Long,
+    currentFps: Float,
     hasCameraPermission: Boolean,
     isScreenCaptureActive: Boolean,
     screenBitmap: Bitmap?,
+    cameraBitmap: Bitmap?,
     getVideoOverlayBitmap: (String?) -> Bitmap?,
     onSelectOrientation: (OutputOrientation) -> Unit,
     onSelectSource: (Long?) -> Unit,
-    onMoveSource: (StudioSource, OutputOrientation, Float, Float) -> Unit,
-    onResizeSource: (StudioSource, OutputOrientation, Float, Float) -> Unit,
+    onMoveSource: (Long, OutputOrientation, Float, Float) -> Unit,
+    onResizeSource: (Long, OutputOrientation, Float, Float) -> Unit,
+    onCommitTransform: (Long, OutputOrientation) -> Unit,
+    onApplyTransformPreset: (StudioSource, OutputOrientation, TransformPreset) -> Unit,
+    onToggleSourceLock: (StudioSource) -> Unit,
+    onToggleCameraFacing: (StudioSource) -> Unit,
+    onEditSourceProperties: (StudioSource) -> Unit,
+    onDeleteSource: (Long) -> Unit,
     onTransitionToProgram: () -> Unit,
+    onToggleFullscreenPreview: () -> Unit,
     onRequestCameraPermission: () -> Unit,
     onRequestScreenCapture: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val activeSources = if (studioModeEnabled) previewSources else programSources
+    val selectedSource = remember(activeSources, selectedSourceId) {
+        activeSources.firstOrNull { it.id == selectedSourceId }
+    }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
             .background(StudioVoid)
             .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
-        if (studioModeEnabled) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            if (isFullscreenPreview) {
+                InteractiveStudioCanvas(
+                    orientation = editingOrientation,
+                    scene = programScene,
+                    sources = programSources,
+                    selectedSourceId = null,
+                    activeAlert = activeAlert,
+                    donationGoal = donationGoal,
+                    recentChat = recentChat,
+                    pinnedChatMessage = pinnedChatMessage,
+                    liveElapsedSeconds = liveElapsedSeconds,
+                    currentFps = currentFps,
+                    hasCameraPermission = hasCameraPermission,
+                    isScreenCaptureActive = isScreenCaptureActive,
+                    privacyShieldActive = privacyShieldActive,
+                    screenBitmap = screenBitmap,
+                    cameraBitmap = cameraBitmap,
+                    getVideoOverlayBitmap = getVideoOverlayBitmap,
+                    isInteractive = false,
+                    isPrimaryCameraHost = true,
+                    onSelectSource = {},
+                    onMoveSource = { _, _, _ -> },
+                    onResizeSource = { _, _, _ -> },
+                    onCommitTransform = {},
+                    onRequestCameraPermission = onRequestCameraPermission,
+                    onRequestScreenCapture = onRequestScreenCapture,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else if (studioModeEnabled) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    CanvasHeaderLabel(
-                        title = "PREVIEW: ${previewScene?.name ?: "Scene"}",
-                        accent = MintAccent,
-                        isSelected = true
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    InteractiveStudioCanvas(
-                        orientation = editingOrientation,
-                        scene = previewScene,
-                        sources = previewSources,
-                        selectedSourceId = selectedSourceId,
-                        activeAlert = activeAlert,
-                        donationGoal = donationGoal,
-                        recentChat = recentChat,
-                        hasCameraPermission = hasCameraPermission,
-                        isScreenCaptureActive = isScreenCaptureActive,
-                        privacyShieldActive = privacyShieldActive,
-                        screenBitmap = screenBitmap,
-                        getVideoOverlayBitmap = getVideoOverlayBitmap,
-                        isInteractive = true,
-                        onSelectSource = onSelectSource,
-                        onMoveSource = { src, dx, dy -> onMoveSource(src, editingOrientation, dx, dy) },
-                        onResizeSource = { src, dw, dh -> onResizeSource(src, editingOrientation, dw, dh) },
-                        onRequestCameraPermission = onRequestCameraPermission,
-                        onRequestScreenCapture = onRequestScreenCapture,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.padding(horizontal = 4.dp)
-                ) {
-                    Button(
-                        onClick = onTransitionToProgram,
-                        colors = ButtonDefaults.buttonColors(containerColor = MintAccent, contentColor = StudioVoid),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.testTag("studio_transition_button")
-                    ) {
-                        Icon(Icons.Rounded.SwapHoriz, contentDescription = "Transition to program", modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(activeTransition.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                    }
-                }
-
-                Column(
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    CanvasHeaderLabel(
-                        title = "PROGRAM: ${programScene?.name ?: "Scene"}",
-                        accent = LiveCrimsonBright,
-                        isSelected = false
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    InteractiveStudioCanvas(
-                        orientation = editingOrientation,
-                        scene = programScene,
-                        sources = programSources,
-                        selectedSourceId = null,
-                        activeAlert = activeAlert,
-                        donationGoal = donationGoal,
-                        recentChat = recentChat,
-                        hasCameraPermission = hasCameraPermission,
-                        isScreenCaptureActive = isScreenCaptureActive,
-                        privacyShieldActive = privacyShieldActive,
-                        screenBitmap = screenBitmap,
-                        getVideoOverlayBitmap = getVideoOverlayBitmap,
-                        isInteractive = false,
-                        onSelectSource = {},
-                        onMoveSource = { _, _, _ -> },
-                        onResizeSource = { _, _, _ -> },
-                        onRequestCameraPermission = onRequestCameraPermission,
-                        onRequestScreenCapture = onRequestScreenCapture,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-        } else {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (horizontalEnabled) {
                     Column(
-                        modifier = Modifier
-                            .weight(if (verticalEnabled) 1.85f else 1f)
-                            .fillMaxHeight()
-                            .clickable { onSelectOrientation(OutputOrientation.HORIZONTAL) },
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         CanvasHeaderLabel(
-                            title = "Horizontal Output (16:9)",
+                            title = "PREVIEW: ${previewScene?.name ?: "Scene"}",
                             accent = MintAccent,
-                            isSelected = editingOrientation == OutputOrientation.HORIZONTAL,
-                            icon = {
-                                Icon(
-                                    Icons.Rounded.DesktopWindows,
-                                    contentDescription = null,
-                                    tint = if (editingOrientation == OutputOrientation.HORIZONTAL) MintAccent else TextSecondary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
+                            isSelected = true
                         )
-                        Spacer(Modifier.height(3.dp))
+                        Spacer(Modifier.height(4.dp))
                         InteractiveStudioCanvas(
-                            orientation = OutputOrientation.HORIZONTAL,
-                            scene = programScene,
-                            sources = programSources,
-                            selectedSourceId = if (editingOrientation == OutputOrientation.HORIZONTAL) selectedSourceId else null,
+                            orientation = editingOrientation,
+                            scene = previewScene,
+                            sources = previewSources,
+                            selectedSourceId = selectedSourceId,
                             activeAlert = activeAlert,
                             donationGoal = donationGoal,
                             recentChat = recentChat,
+                            pinnedChatMessage = pinnedChatMessage,
+                            liveElapsedSeconds = liveElapsedSeconds,
+                            currentFps = currentFps,
                             hasCameraPermission = hasCameraPermission,
                             isScreenCaptureActive = isScreenCaptureActive,
                             privacyShieldActive = privacyShieldActive,
                             screenBitmap = screenBitmap,
+                            cameraBitmap = cameraBitmap,
                             getVideoOverlayBitmap = getVideoOverlayBitmap,
                             isInteractive = true,
-                            onSelectSource = {
-                                onSelectOrientation(OutputOrientation.HORIZONTAL)
-                                onSelectSource(it)
-                            },
-                            onMoveSource = { src, dx, dy ->
-                                onSelectOrientation(OutputOrientation.HORIZONTAL)
-                                onMoveSource(src, OutputOrientation.HORIZONTAL, dx, dy)
-                            },
-                            onResizeSource = { src, dw, dh ->
-                                onSelectOrientation(OutputOrientation.HORIZONTAL)
-                                onResizeSource(src, OutputOrientation.HORIZONTAL, dw, dh)
-                            },
+                            isPrimaryCameraHost = true,
+                            onSelectSource = onSelectSource,
+                            onMoveSource = { id, dx, dy -> onMoveSource(id, editingOrientation, dx, dy) },
+                            onResizeSource = { id, dw, dh -> onResizeSource(id, editingOrientation, dw, dh) },
+                            onCommitTransform = { id -> onCommitTransform(id, editingOrientation) },
+                            onRequestCameraPermission = onRequestCameraPermission,
+                            onRequestScreenCapture = onRequestScreenCapture,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(horizontal = 4.dp)
+                    ) {
+                        Button(
+                            onClick = onTransitionToProgram,
+                            colors = ButtonDefaults.buttonColors(containerColor = MintAccent, contentColor = StudioVoid),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.testTag("studio_transition_button")
+                        ) {
+                            Icon(Icons.Rounded.SwapHoriz, contentDescription = "Transition to program", modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(activeTransition.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CanvasHeaderLabel(
+                            title = "PROGRAM: ${programScene?.name ?: "Scene"}",
+                            accent = LiveCrimsonBright,
+                            isSelected = false
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        // Secondary canvas uses captured frames so it NEVER steals CameraX from Preview
+                        InteractiveStudioCanvas(
+                            orientation = editingOrientation,
+                            scene = programScene,
+                            sources = programSources,
+                            selectedSourceId = null,
+                            activeAlert = activeAlert,
+                            donationGoal = donationGoal,
+                            recentChat = recentChat,
+                            pinnedChatMessage = pinnedChatMessage,
+                            liveElapsedSeconds = liveElapsedSeconds,
+                            currentFps = currentFps,
+                            hasCameraPermission = hasCameraPermission,
+                            isScreenCaptureActive = isScreenCaptureActive,
+                            privacyShieldActive = privacyShieldActive,
+                            screenBitmap = screenBitmap,
+                            cameraBitmap = cameraBitmap,
+                            getVideoOverlayBitmap = getVideoOverlayBitmap,
+                            isInteractive = false,
+                            isPrimaryCameraHost = false,
+                            onSelectSource = {},
+                            onMoveSource = { _, _, _ -> },
+                            onResizeSource = { _, _, _ -> },
+                            onCommitTransform = {},
                             onRequestCameraPermission = onRequestCameraPermission,
                             onRequestScreenCapture = onRequestScreenCapture,
                             modifier = Modifier.weight(1f)
                         )
                     }
                 }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (horizontalEnabled) {
+                        Column(
+                            modifier = Modifier
+                                .weight(if (verticalEnabled) 1.78f else 1f)
+                                .fillMaxHeight()
+                                .clickable { onSelectOrientation(OutputOrientation.HORIZONTAL) },
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CanvasHeaderLabel(
+                                title = "Horizontal Output (16:9)",
+                                accent = MintAccent,
+                                isSelected = editingOrientation == OutputOrientation.HORIZONTAL,
+                                icon = {
+                                    Icon(
+                                        Icons.Rounded.DesktopWindows,
+                                        contentDescription = null,
+                                        tint = if (editingOrientation == OutputOrientation.HORIZONTAL) MintAccent else TextSecondary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            InteractiveStudioCanvas(
+                                orientation = OutputOrientation.HORIZONTAL,
+                                scene = programScene,
+                                sources = programSources,
+                                selectedSourceId = if (editingOrientation == OutputOrientation.HORIZONTAL) selectedSourceId else null,
+                                activeAlert = activeAlert,
+                                donationGoal = donationGoal,
+                                recentChat = recentChat,
+                                pinnedChatMessage = pinnedChatMessage,
+                                liveElapsedSeconds = liveElapsedSeconds,
+                                currentFps = currentFps,
+                                hasCameraPermission = hasCameraPermission,
+                                isScreenCaptureActive = isScreenCaptureActive,
+                                privacyShieldActive = privacyShieldActive,
+                                screenBitmap = screenBitmap,
+                                cameraBitmap = cameraBitmap,
+                                getVideoOverlayBitmap = getVideoOverlayBitmap,
+                                isInteractive = true,
+                                isPrimaryCameraHost = true,
+                                onSelectSource = {
+                                    onSelectOrientation(OutputOrientation.HORIZONTAL)
+                                    onSelectSource(it)
+                                },
+                                onMoveSource = { id, dx, dy ->
+                                    onSelectOrientation(OutputOrientation.HORIZONTAL)
+                                    onMoveSource(id, OutputOrientation.HORIZONTAL, dx, dy)
+                                },
+                                onResizeSource = { id, dw, dh ->
+                                    onSelectOrientation(OutputOrientation.HORIZONTAL)
+                                    onResizeSource(id, OutputOrientation.HORIZONTAL, dw, dh)
+                                },
+                                onCommitTransform = { id -> onCommitTransform(id, OutputOrientation.HORIZONTAL) },
+                                onRequestCameraPermission = onRequestCameraPermission,
+                                onRequestScreenCapture = onRequestScreenCapture,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
 
-                if (verticalEnabled) {
-                    Column(
-                        modifier = Modifier
-                            .weight(if (horizontalEnabled) 0.9f else 1f)
-                            .fillMaxHeight()
-                            .clickable { onSelectOrientation(OutputOrientation.VERTICAL) },
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        CanvasHeaderLabel(
-                            title = "Vertical Output (9:16)",
-                            accent = MintAccent,
-                            isSelected = editingOrientation == OutputOrientation.VERTICAL,
-                            icon = {
-                                Icon(
-                                    Icons.Rounded.Smartphone,
-                                    contentDescription = null,
-                                    tint = if (editingOrientation == OutputOrientation.VERTICAL) MintAccent else TextSecondary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                        )
-                        Spacer(Modifier.height(3.dp))
-                        InteractiveStudioCanvas(
-                            orientation = OutputOrientation.VERTICAL,
-                            scene = programScene,
-                            sources = programSources,
-                            selectedSourceId = if (editingOrientation == OutputOrientation.VERTICAL) selectedSourceId else null,
-                            activeAlert = activeAlert,
-                            donationGoal = donationGoal,
-                            recentChat = recentChat,
-                            hasCameraPermission = hasCameraPermission,
-                            isScreenCaptureActive = isScreenCaptureActive,
-                            privacyShieldActive = privacyShieldActive,
-                            screenBitmap = screenBitmap,
-                            getVideoOverlayBitmap = getVideoOverlayBitmap,
-                            isInteractive = true,
-                            onSelectSource = {
-                                onSelectOrientation(OutputOrientation.VERTICAL)
-                                onSelectSource(it)
-                            },
-                            onMoveSource = { src, dx, dy ->
-                                onSelectOrientation(OutputOrientation.VERTICAL)
-                                onMoveSource(src, OutputOrientation.VERTICAL, dx, dy)
-                            },
-                            onResizeSource = { src, dw, dh ->
-                                onSelectOrientation(OutputOrientation.VERTICAL)
-                                onResizeSource(src, OutputOrientation.VERTICAL, dw, dh)
-                            },
-                            onRequestCameraPermission = onRequestCameraPermission,
-                            onRequestScreenCapture = onRequestScreenCapture,
-                            modifier = Modifier.weight(1f)
-                        )
+                    if (verticalEnabled) {
+                        Column(
+                            modifier = Modifier
+                                .weight(if (horizontalEnabled) 0.92f else 1f)
+                                .fillMaxHeight()
+                                .clickable { onSelectOrientation(OutputOrientation.VERTICAL) },
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CanvasHeaderLabel(
+                                title = "Vertical Output (9:16)",
+                                accent = MintAccent,
+                                isSelected = editingOrientation == OutputOrientation.VERTICAL,
+                                icon = {
+                                    Icon(
+                                        Icons.Rounded.Smartphone,
+                                        contentDescription = null,
+                                        tint = if (editingOrientation == OutputOrientation.VERTICAL) MintAccent else TextSecondary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            // Primary camera owner only if Horizontal is disabled, preventing camera conflict
+                            InteractiveStudioCanvas(
+                                orientation = OutputOrientation.VERTICAL,
+                                scene = programScene,
+                                sources = programSources,
+                                selectedSourceId = if (editingOrientation == OutputOrientation.VERTICAL) selectedSourceId else null,
+                                activeAlert = activeAlert,
+                                donationGoal = donationGoal,
+                                recentChat = recentChat,
+                                pinnedChatMessage = pinnedChatMessage,
+                                liveElapsedSeconds = liveElapsedSeconds,
+                                currentFps = currentFps,
+                                hasCameraPermission = hasCameraPermission,
+                                isScreenCaptureActive = isScreenCaptureActive,
+                                privacyShieldActive = privacyShieldActive,
+                                screenBitmap = screenBitmap,
+                                cameraBitmap = cameraBitmap,
+                                getVideoOverlayBitmap = getVideoOverlayBitmap,
+                                isInteractive = true,
+                                isPrimaryCameraHost = !horizontalEnabled,
+                                onSelectSource = {
+                                    onSelectOrientation(OutputOrientation.VERTICAL)
+                                    onSelectSource(it)
+                                },
+                                onMoveSource = { id, dx, dy ->
+                                    onSelectOrientation(OutputOrientation.VERTICAL)
+                                    onMoveSource(id, OutputOrientation.VERTICAL, dx, dy)
+                                },
+                                onResizeSource = { id, dw, dh ->
+                                    onSelectOrientation(OutputOrientation.VERTICAL)
+                                    onResizeSource(id, OutputOrientation.VERTICAL, dw, dh)
+                                },
+                                onCommitTransform = { id -> onCommitTransform(id, OutputOrientation.VERTICAL) },
+                                onRequestCameraPermission = onRequestCameraPermission,
+                                onRequestScreenCapture = onRequestScreenCapture,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
                 }
             }
+
+            // Fullscreen / Clean Program toggle button (top-right corner of stage)
+            IconButton(
+                onClick = onToggleFullscreenPreview,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(StudioHeader.copy(alpha = 0.85f))
+                    .border(1.dp, StudioBorder, CircleShape)
+                    .testTag("toggle_fullscreen_preview")
+            ) {
+                Icon(
+                    imageVector = if (isFullscreenPreview) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                    contentDescription = if (isFullscreenPreview) "Exit Fullscreen Preview" else "Clean Program Preview",
+                    tint = MintAccentBright,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+
+        // Selected Source Quick-Action Transform Toolbar
+        if (selectedSource != null && !isFullscreenPreview) {
+            Spacer(Modifier.height(4.dp))
+            SelectedSourceQuickToolbar(
+                source = selectedSource,
+                orientation = editingOrientation,
+                onCenterBoth = { onApplyTransformPreset(selectedSource, editingOrientation, TransformPreset.CENTER_BOTH) },
+                onFitScreen = { onApplyTransformPreset(selectedSource, editingOrientation, TransformPreset.FIT_SCREEN) },
+                onFlipCamera = { onToggleCameraFacing(selectedSource) },
+                onToggleLock = { onToggleSourceLock(selectedSource) },
+                onOpenProperties = { onEditSourceProperties(selectedSource) },
+                onDelete = { onDeleteSource(selectedSource.id) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SelectedSourceQuickToolbar(
+    source: StudioSource,
+    orientation: OutputOrientation,
+    onCenterBoth: () -> Unit,
+    onFitScreen: () -> Unit,
+    onFlipCamera: () -> Unit,
+    onToggleLock: () -> Unit,
+    onOpenProperties: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val rect = if (orientation == OutputOrientation.HORIZONTAL) source.hRect else source.vRect
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(StudioHeader)
+            .border(1.dp, StudioBorder, RoundedCornerShape(6.dp))
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text = "${source.name} (${(rect.x * 100).toInt()}%,${(rect.y * 100).toInt()}% • ${(rect.width * 100).toInt()}×${(rect.height * 100).toInt()}%)",
+            color = MintAccentBright,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+        Spacer(Modifier.width(4.dp))
+        QuickActionChip(Icons.Rounded.CenterFocusStrong, "Center", enabled = !source.isLocked, onClick = onCenterBoth)
+        QuickActionChip(Icons.Rounded.AspectRatio, "Fit Full", enabled = !source.isLocked, onClick = onFitScreen)
+        if (source.type == SourceType.CAMERA) {
+            QuickActionChip(Icons.Rounded.Cameraswitch, "Flip Cam", onClick = onFlipCamera)
+        }
+        QuickActionChip(
+            icon = if (source.isLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+            label = if (source.isLocked) "Unlock" else "Lock",
+            highlight = source.isLocked,
+            onClick = onToggleLock
+        )
+        QuickActionChip(Icons.Rounded.Settings, "Props", onClick = onOpenProperties)
+        QuickActionChip(Icons.Rounded.DeleteOutline, "Remove", highlight = true, highlightColor = LiveCrimsonBright, onClick = onDelete)
+    }
+}
+
+@Composable
+private fun QuickActionChip(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    highlight: Boolean = false,
+    highlightColor: Color = MintAccentBright,
+    onClick: () -> Unit
+) {
+    Surface(
+        color = if (highlight) highlightColor.copy(alpha = 0.16f) else StudioElevated,
+        shape = RoundedCornerShape(4.dp),
+        modifier = Modifier
+            .alpha(if (enabled) 1f else 0.45f)
+            .border(1.dp, if (highlight) highlightColor else StudioBorder, RoundedCornerShape(4.dp))
+            .clickable(enabled = enabled) { onClick() }
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+        ) {
+            Icon(icon, contentDescription = label, tint = if (highlight) highlightColor else TextPrimary, modifier = Modifier.size(13.dp))
+            Spacer(Modifier.width(4.dp))
+            Text(label, color = if (highlight) highlightColor else TextPrimary, fontSize = 10.sp, fontWeight = FontWeight.Medium)
         }
     }
 }
@@ -395,15 +591,21 @@ fun InteractiveStudioCanvas(
     activeAlert: LiveAlertEvent?,
     donationGoal: DonationGoalState,
     recentChat: List<StreamChatMessage>,
+    pinnedChatMessage: StreamChatMessage?,
+    liveElapsedSeconds: Long,
+    currentFps: Float,
     hasCameraPermission: Boolean,
     isScreenCaptureActive: Boolean,
     privacyShieldActive: Boolean,
     screenBitmap: Bitmap?,
+    cameraBitmap: Bitmap?,
     getVideoOverlayBitmap: (String?) -> Bitmap?,
     isInteractive: Boolean,
+    isPrimaryCameraHost: Boolean,
     onSelectSource: (Long?) -> Unit,
-    onMoveSource: (StudioSource, Float, Float) -> Unit,
-    onResizeSource: (StudioSource, Float, Float) -> Unit,
+    onMoveSource: (Long, Float, Float) -> Unit,
+    onResizeSource: (Long, Float, Float) -> Unit,
+    onCommitTransform: (Long) -> Unit,
     onRequestCameraPermission: () -> Unit,
     onRequestScreenCapture: () -> Unit,
     modifier: Modifier = Modifier
@@ -411,13 +613,21 @@ fun InteractiveStudioCanvas(
     val ratio = if (orientation == OutputOrientation.HORIZONTAL) 16f / 9f else 9f / 16f
     val borderColor = if (selectedSourceId != null) MintAccent else StudioBorder
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
+        val outerW = maxWidth
+        val outerH = maxHeight.coerceAtLeast(1.dp)
+        val outerRatio = outerW / outerH
+        val sizedModifier = if (outerRatio > ratio) {
+            Modifier.fillMaxHeight().aspectRatio(ratio, matchHeightConstraintsFirst = true)
+        } else {
+            Modifier.fillMaxWidth().aspectRatio(ratio, matchHeightConstraintsFirst = false)
+        }
+
         BoxWithConstraints(
-            modifier = Modifier
-                .aspectRatio(ratio)
+            modifier = sizedModifier
                 .clip(RoundedCornerShape(6.dp))
                 .background(Color(scene?.backdropHex ?: 0xFF0C1520))
                 .border(1.5.dp, borderColor, RoundedCornerShape(6.dp))
@@ -498,9 +708,11 @@ fun InteractiveStudioCanvas(
                                 onDrag = { change, dragAmount ->
                                     change.consume()
                                     if (!src.isLocked) {
-                                        onMoveSource(src, dragAmount.x / canvasWidthPx, dragAmount.y / canvasHeightPx)
+                                        onMoveSource(src.id, dragAmount.x / canvasWidthPx, dragAmount.y / canvasHeightPx)
                                     }
-                                }
+                                },
+                                onDragEnd = { onCommitTransform(src.id) },
+                                onDragCancel = { onCommitTransform(src.id) }
                             )
                         }
                         .clickable { onSelectSource(src.id) }
@@ -516,10 +728,15 @@ fun InteractiveStudioCanvas(
                         activeAlert = activeAlert,
                         donationGoal = donationGoal,
                         recentChat = recentChat,
+                        pinnedChatMessage = pinnedChatMessage,
+                        liveElapsedSeconds = liveElapsedSeconds,
+                        currentFps = currentFps,
                         hasCameraPermission = hasCameraPermission,
+                        isPrimaryCameraHost = isPrimaryCameraHost,
                         isScreenCaptureActive = isScreenCaptureActive,
                         privacyShieldActive = privacyShieldActive,
                         screenBitmap = screenBitmap,
+                        cameraBitmap = cameraBitmap,
                         videoOverlayBitmap = if (src.type == SourceType.VIDEO_OVERLAY) getVideoOverlayBitmap(src.imageUri) else null,
                         onRequestCameraPermission = onRequestCameraPermission,
                         onRequestScreenCapture = onRequestScreenCapture
@@ -545,7 +762,7 @@ fun InteractiveStudioCanvas(
                                         Spacer(Modifier.width(2.dp))
                                     }
                                     Text(
-                                        src.name,
+                                        src.name + if (src.chromaKeyEnabled) " [CK]" else "",
                                         color = Color.White,
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold,
@@ -553,33 +770,43 @@ fun InteractiveStudioCanvas(
                                     )
                                 }
                             }
-                            // Corner Resize Handle (Bottom-Right)
+                            // 48dp accessible touch target around the visible corner resize handle
                             if (!src.isLocked && isInteractive) {
                                 Box(
-                                    contentAlignment = Alignment.Center,
+                                    contentAlignment = Alignment.BottomEnd,
                                     modifier = Modifier
                                         .align(Alignment.BottomEnd)
-                                        .size(20.dp)
-                                        .clip(CircleShape)
-                                        .background(MintAccentBright)
-                                        .border(1.5.dp, StudioVoid, CircleShape)
+                                        .size(48.dp)
                                         .pointerInput(src.id, orientation, canvasWidthPx, canvasHeightPx) {
-                                            detectDragGestures { change, dragAmount ->
-                                                change.consume()
-                                                onResizeSource(
-                                                    src,
-                                                    dragAmount.x / canvasWidthPx,
-                                                    dragAmount.y / canvasHeightPx
-                                                )
-                                            }
+                                            detectDragGestures(
+                                                onDrag = { change, dragAmount ->
+                                                    change.consume()
+                                                    onResizeSource(
+                                                        src.id,
+                                                        dragAmount.x / canvasWidthPx,
+                                                        dragAmount.y / canvasHeightPx
+                                                    )
+                                                },
+                                                onDragEnd = { onCommitTransform(src.id) },
+                                                onDragCancel = { onCommitTransform(src.id) }
+                                            )
                                         }
                                 ) {
-                                    Icon(
-                                        Icons.Rounded.OpenInFull,
-                                        contentDescription = "Resize source",
-                                        tint = StudioVoid,
-                                        modifier = Modifier.size(11.dp)
-                                    )
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .background(MintAccentBright)
+                                            .border(1.5.dp, StudioVoid, CircleShape)
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.OpenInFull,
+                                            contentDescription = "Resize source",
+                                            tint = StudioVoid,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -596,10 +823,15 @@ private fun SourceLayerRenderer(
     activeAlert: LiveAlertEvent?,
     donationGoal: DonationGoalState,
     recentChat: List<StreamChatMessage>,
+    pinnedChatMessage: StreamChatMessage?,
+    liveElapsedSeconds: Long,
+    currentFps: Float,
     hasCameraPermission: Boolean,
+    isPrimaryCameraHost: Boolean,
     isScreenCaptureActive: Boolean,
     privacyShieldActive: Boolean,
     screenBitmap: Bitmap?,
+    cameraBitmap: Bitmap?,
     videoOverlayBitmap: Bitmap?,
     onRequestCameraPermission: () -> Unit,
     onRequestScreenCapture: () -> Unit
@@ -692,16 +924,49 @@ private fun SourceLayerRenderer(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(shape)
-                    .background(Color(0xFF171326)),
+                    .background(if (source.chromaKeyEnabled) Color(source.chromaKeyColorHex).copy(alpha = 0.18f) else Color(0xFF171326)),
                 contentAlignment = Alignment.Center
             ) {
                 if (hasCameraPermission) {
-                    CameraXPreviewBox(
-                        lensFacingFront = source.cameraFacingFront,
-                        mirrorFront = source.cameraMirror,
-                        zoomRatio = source.cameraZoom,
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    if (isPrimaryCameraHost) {
+                        CameraXPreviewBox(
+                            lensFacingFront = source.cameraFacingFront,
+                            mirrorFront = source.cameraMirror,
+                            zoomRatio = source.cameraZoom,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else if (cameraBitmap != null && !cameraBitmap.isRecycled) {
+                        Image(
+                            bitmap = cameraBitmap.asImageBitmap(),
+                            contentDescription = source.name,
+                            contentScale = scaleMode,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    scaleX = source.cameraZoom.coerceIn(1f, 4f)
+                                    scaleY = source.cameraZoom.coerceIn(1f, 4f)
+                                }
+                        )
+                    } else {
+                        Text("Mirroring Camera…", color = TextSecondary, fontSize = 10.sp)
+                    }
+                    if (source.chromaKeyEnabled) {
+                        Surface(
+                            color = StudioVoid.copy(alpha = 0.78f),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(4.dp)
+                        ) {
+                            Text(
+                                "CHROMA LIVE",
+                                color = MintAccentBright,
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 } else {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -747,7 +1012,7 @@ private fun SourceLayerRenderer(
         SourceType.IMAGE_OVERLAY -> {
             if (!source.imageUri.isNullOrBlank()) {
                 AsyncImage(
-                    model = Uri.parse(source.imageUri),
+                    model = source.imageUri.toUri(),
                     contentDescription = source.name,
                     contentScale = scaleMode,
                     modifier = Modifier.fillMaxSize().clip(shape)
@@ -807,6 +1072,47 @@ private fun SourceLayerRenderer(
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center
                 )
+            }
+        }
+
+        SourceType.STREAM_TIMER -> {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(shape)
+                    .background(Color(0xD40D131B))
+                    .border(1.5.dp, accent, shape)
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(if (liveElapsedSeconds > 0L) LiveCrimsonBright else accent)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "${source.textContent.ifBlank { if (liveElapsedSeconds > 0L) "LIVE" else "UPTIME" }}  ${formatDuration(liveElapsedSeconds)}",
+                        color = TextPrimary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.Timer, contentDescription = null, tint = MintAccentBright, modifier = Modifier.size(12.dp))
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        text = "${currentFps.toInt()} FPS",
+                        color = TextSecondary,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
             }
         }
 
@@ -915,6 +1221,28 @@ private fun SourceLayerRenderer(
                     .border(1.dp, Color(0x33FFFFFF), shape)
                     .padding(6.dp)
             ) {
+                if (pinnedChatMessage != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(MintAccent.copy(alpha = 0.22f))
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.Rounded.PushPin, contentDescription = null, tint = MintAccentBright, modifier = Modifier.size(10.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "${pinnedChatMessage.username}: ${pinnedChatMessage.message}",
+                            color = MintAccentBright,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.height(3.dp))
+                }
                 recentChat.takeLast(5).forEach { msg ->
                     Row(modifier = Modifier.padding(vertical = 1.dp)) {
                         Text(
@@ -961,8 +1289,10 @@ private fun CameraXPreviewBox(
 
     DisposableEffect(lensFacingFront, mirrorFront, previewView) {
         val view = previewView ?: return@DisposableEffect onDispose {}
+        var isDisposed = false
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         val listener = Runnable {
+            if (isDisposed) return@Runnable
             runCatching {
                 val provider = cameraProviderFuture.get()
                 val preview = Preview.Builder().build().also {
@@ -984,7 +1314,7 @@ private fun CameraXPreviewBox(
                                         if (shouldMirror) postScale(-1f, 1f)
                                     }
                                     Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true).also {
-                                        raw.recycle()
+                                        if (it !== raw) raw.recycle()
                                     }
                                 } else {
                                     raw
@@ -1009,9 +1339,10 @@ private fun CameraXPreviewBox(
         cameraProviderFuture.addListener(listener, ContextCompat.getMainExecutor(context))
 
         onDispose {
+            isDisposed = true
             boundCamera = null
-            runCatching {
-                cameraProviderFuture.get().unbindAll()
+            if (cameraProviderFuture.isDone) {
+                runCatching { cameraProviderFuture.get().unbindAll() }
             }
         }
     }

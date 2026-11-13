@@ -3,7 +3,8 @@ package com.example.streaming
 import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
-import android.net.Uri
+import androidx.core.graphics.scale
+import androidx.core.net.toUri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -12,24 +13,29 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToLong
 
 /**
- * Loops user-selected MP4/WebM video overlays smoothly and publishes frames into
- * MediaProjectionHolder so both the Studio Preview and the H.264 encoder render animated overlays.
+ * Loops user-selected MP4/WebM video overlays smoothly with configurable playback speed
+ * and publishes non-recycled frames into MediaProjectionHolder for Studio Preview & H.264 encoder.
  */
 object VideoOverlayManager {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val speedMap = ConcurrentHashMap<String, Float>()
 
-    fun ensurePlaying(context: Context, uriString: String) {
-        if (uriString.isBlank() || activeJobs.containsKey(uriString)) return
+    fun ensurePlaying(context: Context, uriString: String, speed: Float = 1.0f) {
+        if (uriString.isBlank()) return
+        speedMap[uriString] = speed.coerceIn(0.25f, 2.5f)
+        if (activeJobs.containsKey(uriString)) return
+
         val job = scope.launch {
             val retriever = MediaMetadataRetriever()
             var durationMs = 0L
             val ready = runCatching {
-                retriever.setDataSource(context, Uri.parse(uriString))
+                retriever.setDataSource(context, uriString.toUri())
                 durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                    ?.toLongOrNull()?.coerceAtLeast(1000L) ?: 5000L
+                    ?.toLongOrNull()?.coerceAtLeast(500L) ?: 5000L
             }.isSuccess
 
             if (!ready) {
@@ -39,7 +45,7 @@ object VideoOverlayManager {
             }
 
             var positionMs = 0L
-            val stepMs = 80L // ~12.5 FPS smooth overlay frame update without starving encoder
+            val baseStepMs = 66L // ~15 FPS smooth overlay decoding
             try {
                 while (isActive) {
                     val frame = runCatching {
@@ -52,8 +58,9 @@ object VideoOverlayManager {
                         val scaled = scaleDownIfNeeded(frame, 640)
                         MediaProjectionHolder.updateVideoOverlayFrame(uriString, scaled)
                     }
-                    positionMs = (positionMs + stepMs) % durationMs
-                    delay(stepMs)
+                    val spd = speedMap[uriString] ?: 1.0f
+                    positionMs = (positionMs + (baseStepMs * spd).roundToLong()) % durationMs
+                    delay(baseStepMs)
                 }
             } finally {
                 runCatching { retriever.release() }
@@ -67,6 +74,7 @@ object VideoOverlayManager {
         for (key in keys) {
             if (!activeUris.contains(key)) {
                 activeJobs.remove(key)?.cancel()
+                speedMap.remove(key)
             }
         }
     }
@@ -78,8 +86,6 @@ object VideoOverlayManager {
         val ratio = maxDim.toFloat() / maxOf(w, h).toFloat()
         val nw = (w * ratio).toInt().coerceAtLeast(1)
         val nh = (h * ratio).toInt().coerceAtLeast(1)
-        return Bitmap.createScaledBitmap(src, nw, nh, true).also {
-            if (it !== src) src.recycle()
-        }
+        return src.scale(nw, nh)
     }
 }

@@ -117,16 +117,26 @@ class HardwareEncoderPipeline(
     @Volatile var currentAlert: LiveAlertEvent? = null
     @Volatile var currentGoal: DonationGoalState = DonationGoalState()
     @Volatile var currentChat: List<StreamChatMessage> = emptyList()
+    @Volatile var currentPinnedChat: StreamChatMessage? = null
     @Volatile var currentOrientation: OutputOrientation = OutputOrientation.HORIZONTAL
     @Volatile var activePreferences: StudioPreferences = StudioPreferences()
+    @Volatile var currentLiveElapsedSec: Long = 0L
+    @Volatile var currentTelemetryFps: Float = 0f
+
+    var onLogEvent: ((level: String, tag: String, message: String) -> Unit)? = null
 
     private val framesRendered = AtomicInteger(0)
     private val framesDropped = AtomicInteger(0)
     private val totalFramesCounter = AtomicInteger(0)
     private var pipelineStartNs = 0L
+    private var lastStatsNs = 0L
+    private var lastConsecutiveFailures = 0
+    private var stableTicksSinceDrop = 0
     private var encodedWidth = 1280
     private var encodedHeight = 720
     @Volatile private var dynamicTargetBitrateKbps = 6000
+
+    fun isActivelyStreamingOrRecording(): Boolean = isStreamingActive.get() || isRecordingActive.get()
 
     fun updateLiveBitrate(bitrateKbps: Int) {
         dynamicTargetBitrateKbps = bitrateKbps.coerceIn(800, 18000)
@@ -181,9 +191,12 @@ class HardwareEncoderPipeline(
                     rtmpClients[dest.id] = client
                     destinationHealth[dest.id] = DestinationHealthState.LIVE
                     connectedNames.add(dest.name)
+                    onLogEvent?.invoke("INFO", "RTMP", "Connected to ${dest.name} (${encodedWidth}x${encodedHeight}@${prefs.targetFps}fps)")
                 } else {
                     destinationHealth[dest.id] = DestinationHealthState.FAILED
-                    failures.add("${dest.name}: ${res.exceptionOrNull()?.message ?: "Connection failed"}")
+                    val reason = res.exceptionOrNull()?.message ?: "Connection failed"
+                    failures.add("${dest.name}: $reason")
+                    onLogEvent?.invoke("ERR", "RTMP", "${dest.name} failed: $reason")
                 }
             }
 
@@ -232,8 +245,10 @@ class HardwareEncoderPipeline(
                             rtmpClients[id] = newClient
                             destinationHealth[id] = DestinationHealthState.LIVE
                             reconnectAttempts[id] = 0
+                            onLogEvent?.invoke("INFO", "WATCHDOG", "Reconnected ${dest.name} cleanly")
                         } else {
                             destinationHealth[id] = DestinationHealthState.RECONNECTING
+                            onLogEvent?.invoke("WARN", "WATCHDOG", "Reconnect attempt #$attempt failed for ${dest.name}")
                         }
                     }
                 }
@@ -284,6 +299,12 @@ class HardwareEncoderPipeline(
             }
         }
         isRecordingActive.set(true)
+        // Request an immediate keyframe so local MP4 starts cleanly without waiting for next GOP
+        runCatching {
+            videoEncoder?.setParameters(Bundle().apply {
+                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            })
+        }
         return true
     }
 
@@ -320,6 +341,8 @@ class HardwareEncoderPipeline(
                     )
                 }
             }
+        } else {
+            runCatching { tempFile?.delete() }
         }
     }
 
@@ -405,13 +428,48 @@ class HardwareEncoderPipeline(
     }
 
     fun collectStats(): PipelineStats {
-        val fps = framesRendered.getAndSet(0).toFloat()
+        val nowNs = System.nanoTime()
+        val elapsedSec = if (lastStatsNs > 0L) {
+            ((nowNs - lastStatsNs) / 1_000_000_000.0).toFloat().coerceIn(0.25f, 5.0f)
+        } else 1.0f
+        lastStatsNs = nowNs
+
+        val rendered = framesRendered.getAndSet(0)
+        val fps = if (isPipelineRunning.get()) rendered / elapsedSec else 0f
+        currentTelemetryFps = fps
+
         val bytes = rtmpClients.values.sumOf { it.getAndResetBytesSent() }
-        val kbps = ((bytes * 8L) / 1000L).toInt()
+        val kbps = ((bytes * 8.0) / (elapsedSec * 1000.0)).toInt()
         val activeCount = rtmpClients.values.count { it.isActive() }
         val reconnectingCount = destinationHealth.values.count { it == DestinationHealthState.RECONNECTING }
+
+        // Adaptive Bitrate (ABR) controller for congested mobile/Wi-Fi networks
+        if (isStreamingActive.get() && activePreferences.dynamicBitrateEnabled) {
+            val userMax = activePreferences.videoBitrateKbps.coerceAtLeast(1500)
+            val floor = (userMax * 0.40f).toInt().coerceAtLeast(1000)
+            if (reconnectingCount > 0 || (activeCount > 0 && kbps in 1 until (dynamicTargetBitrateKbps * 0.55f).toInt())) {
+                lastConsecutiveFailures++
+                stableTicksSinceDrop = 0
+                if (lastConsecutiveFailures >= 2 && dynamicTargetBitrateKbps > floor) {
+                    val steppedDown = (dynamicTargetBitrateKbps * 0.80f).toInt().coerceAtLeast(floor)
+                    if (steppedDown < dynamicTargetBitrateKbps) {
+                        updateLiveBitrate(steppedDown)
+                        onLogEvent?.invoke("WARN", "ABR", "Congestion detected — stepped bitrate down to $steppedDown kbps")
+                    }
+                }
+            } else {
+                lastConsecutiveFailures = 0
+                stableTicksSinceDrop++
+                if (stableTicksSinceDrop >= 8 && dynamicTargetBitrateKbps < userMax) {
+                    val recovered = (dynamicTargetBitrateKbps + 400).coerceAtMost(userMax)
+                    updateLiveBitrate(recovered)
+                    stableTicksSinceDrop = 0
+                }
+            }
+        }
+
         return PipelineStats(
-            currentFps = if (isPipelineRunning.get()) fps else 0f,
+            currentFps = fps,
             currentBitrateKbps = kbps,
             targetBitrateKbps = dynamicTargetBitrateKbps,
             droppedFrames = framesDropped.get(),
@@ -424,11 +482,19 @@ class HardwareEncoderPipeline(
 
     private fun ensurePipelineStarted(prefs: StudioPreferences, forRecordingOnly: Boolean) {
         if (isPipelineRunning.getAndSet(true)) return
+        cachedVideoFormat = null
+        cachedAudioFormat = null
+        cachedSps = null
+        cachedPps = null
+        cachedAacConfig = null
+        lastMuxVideoPts.set(-1L)
+        lastMuxAudioPts.set(-1L)
         maxReplayUs = prefs.replayBufferSeconds.coerceIn(10, 120) * 1_000_000L
 
         val isVertical = currentOrientation == OutputOrientation.VERTICAL
         val baseH = when {
             prefs.resolutionHeight >= 1080 -> 1080
+            prefs.resolutionHeight >= 900 -> 900
             prefs.resolutionHeight <= 480 -> 480
             else -> 720
         }
@@ -448,14 +514,12 @@ class HardwareEncoderPipeline(
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, prefs.keyframeIntervalSec.coerceIn(1, 5))
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    val mode = if (prefs.rateControl == RateControlMode.CBR) {
-                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
-                    } else {
-                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-                    }
-                    setInteger(MediaFormat.KEY_BITRATE_MODE, mode)
+                val mode = if (prefs.rateControl == RateControlMode.CBR) {
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                } else {
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
                 }
+                setInteger(MediaFormat.KEY_BITRATE_MODE, mode)
                 val profileInt = when (prefs.encoderProfile) {
                     EncoderProfile.BASELINE -> MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline
                     EncoderProfile.MAIN -> MediaCodecInfo.CodecProfileLevel.AVCProfileMain
@@ -467,7 +531,6 @@ class HardwareEncoderPipeline(
             runCatching {
                 vCodec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             }.onFailure {
-                // Fallback without strict profile/CBR if a chipset restricts them
                 val fallback = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                     setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
                     setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
@@ -481,9 +544,12 @@ class HardwareEncoderPipeline(
             videoEncoder = vCodec
             inputSurface = surface
 
+            val sampleRate = prefs.audioSampleRateHz.let { if (it >= 48000) 48000 else 44100 }
+            audioMixerEngine.updateSampleRate(sampleRate)
+
             val audioFormat = MediaFormat.createAudioFormat(
                 MediaFormat.MIMETYPE_AUDIO_AAC,
-                AudioMixerEngine.SAMPLE_RATE,
+                sampleRate,
                 1
             ).apply {
                 setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
@@ -496,8 +562,10 @@ class HardwareEncoderPipeline(
             audioEncoder = aCodec
 
             pipelineStartNs = System.nanoTime()
+            lastStatsNs = pipelineStartNs
             framesDropped.set(0)
             totalFramesCounter.set(0)
+            onLogEvent?.invoke("INFO", "ENCODER", "Started H.264 ${width}x${height}@${fps}fps (${targetKbps}kbps) + AAC ${sampleRate}Hz")
 
             audioMixerEngine.onMixedPcmFrame = { pcm, count ->
                 feedAudioPcm(pcm, count)
@@ -506,7 +574,8 @@ class HardwareEncoderPipeline(
             startRenderLoop(surface, width, height, fps)
             startVideoDrainLoop(vCodec)
             startAudioDrainLoop(aCodec)
-        }.onFailure {
+        }.onFailure { err ->
+            onLogEvent?.invoke("ERR", "ENCODER", "Failed to start MediaCodec pipeline: ${err.message}")
             stopAll()
         }
     }
@@ -517,11 +586,7 @@ class HardwareEncoderPipeline(
             var nextFrameDeadlineNs = System.nanoTime()
             while (isActive && isPipelineRunning.get()) {
                 try {
-                    val canvas = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        surface.lockHardwareCanvas()
-                    } else {
-                        surface.lockCanvas(null)
-                    }
+                    val canvas = surface.lockHardwareCanvas()
                     try {
                         compositor.renderFrame(
                             canvas = canvas,
@@ -533,7 +598,10 @@ class HardwareEncoderPipeline(
                             activeAlert = currentAlert,
                             donationGoal = currentGoal,
                             recentChat = currentChat,
-                            privacyShieldActive = activePreferences.privacyShieldActive
+                            privacyShieldActive = activePreferences.privacyShieldActive,
+                            liveElapsedSec = currentLiveElapsedSec,
+                            currentFpsTelemetry = currentTelemetryFps,
+                            pinnedChatMessage = currentPinnedChat
                         )
                     } finally {
                         surface.unlockCanvasAndPost(canvas)
@@ -548,7 +616,6 @@ class HardwareEncoderPipeline(
                 if (sleepNs > 1_000_000L) {
                     delay(sleepNs / 1_000_000L)
                 } else if (sleepNs < -frameIntervalNs * 3) {
-                    // Re-sync deadline if system lagged briefly
                     nextFrameDeadlineNs = System.nanoTime()
                 }
             }
@@ -746,6 +813,9 @@ class HardwareEncoderPipeline(
             cachedSps = sps
             cachedPps = pps
             rtmpClients.values.forEach { it.sendVideoConfig(sps, pps) }
+        } else if (csd0 != null) {
+            val combined = ByteArray(csd0.remaining()).also { csd0.get(it) }
+            parseAnnexBConfig(combined)
         }
     }
 
@@ -766,57 +836,60 @@ class HardwareEncoderPipeline(
         }
     }
 
-    private fun splitAnnexBNalus(data: ByteArray): List<ByteArray> {
-        val result = mutableListOf<ByteArray>()
-        var i = 0
-        var start = -1
-        while (i < data.size - 3) {
-            val is4Byte = data[i] == 0.toByte() && data[i + 1] == 0.toByte() &&
-                data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()
-            val is3Byte = !is4Byte && data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 1.toByte()
-            if (is4Byte || is3Byte) {
-                if (start >= 0 && i > start) {
-                    result.add(data.copyOfRange(start, i))
+    internal companion object {
+        internal fun splitAnnexBNalus(data: ByteArray): List<ByteArray> {
+            val result = mutableListOf<ByteArray>()
+            var i = 0
+            var start = -1
+            while (i < data.size - 2) {
+                val is4Byte = i + 3 < data.size &&
+                    data[i] == 0.toByte() && data[i + 1] == 0.toByte() &&
+                    data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()
+                val is3Byte = !is4Byte && data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 1.toByte()
+                if (is4Byte || is3Byte) {
+                    if (start >= 0 && i > start) {
+                        result.add(data.copyOfRange(start, i))
+                    }
+                    i += if (is4Byte) 4 else 3
+                    start = i
+                } else {
+                    i++
                 }
-                i += if (is4Byte) 4 else 3
-                start = i
-            } else {
-                i++
+            }
+            if (start >= 0 && start < data.size) {
+                result.add(data.copyOfRange(start, data.size))
+            } else if (result.isEmpty() && data.isNotEmpty()) {
+                result.add(data)
+            }
+            return result
+        }
+
+        internal fun stripStartCode(nalu: ByteArray): ByteArray {
+            return when {
+                nalu.size >= 4 && nalu[0] == 0.toByte() && nalu[1] == 0.toByte() && nalu[2] == 0.toByte() && nalu[3] == 1.toByte() ->
+                    nalu.copyOfRange(4, nalu.size)
+                nalu.size >= 3 && nalu[0] == 0.toByte() && nalu[1] == 0.toByte() && nalu[2] == 1.toByte() ->
+                    nalu.copyOfRange(3, nalu.size)
+                else -> nalu
             }
         }
-        if (start >= 0 && start < data.size) {
-            result.add(data.copyOfRange(start, data.size))
-        } else if (result.isEmpty() && data.isNotEmpty()) {
-            result.add(data)
-        }
-        return result
-    }
 
-    private fun stripStartCode(nalu: ByteArray): ByteArray {
-        return when {
-            nalu.size >= 4 && nalu[0] == 0.toByte() && nalu[1] == 0.toByte() && nalu[2] == 0.toByte() && nalu[3] == 1.toByte() ->
-                nalu.copyOfRange(4, nalu.size)
-            nalu.size >= 3 && nalu[0] == 0.toByte() && nalu[1] == 0.toByte() && nalu[2] == 1.toByte() ->
-                nalu.copyOfRange(3, nalu.size)
-            else -> nalu
+        internal fun annexBToAvcc(data: ByteArray): ByteArray {
+            val nalus = splitAnnexBNalus(data)
+            val total = nalus.sumOf { 4 + it.size }
+            val out = ByteArray(total)
+            var pos = 0
+            for (nalu in nalus) {
+                val len = nalu.size
+                out[pos++] = ((len ushr 24) and 0xFF).toByte()
+                out[pos++] = ((len ushr 16) and 0xFF).toByte()
+                out[pos++] = ((len ushr 8) and 0xFF).toByte()
+                out[pos++] = (len and 0xFF).toByte()
+                System.arraycopy(nalu, 0, out, pos, len)
+                pos += len
+            }
+            return out
         }
-    }
-
-    private fun annexBToAvcc(data: ByteArray): ByteArray {
-        val nalus = splitAnnexBNalus(data)
-        val total = nalus.sumOf { 4 + it.size }
-        val out = ByteArray(total)
-        var pos = 0
-        for (nalu in nalus) {
-            val len = nalu.size
-            out[pos++] = ((len ushr 24) and 0xFF).toByte()
-            out[pos++] = ((len ushr 16) and 0xFF).toByte()
-            out[pos++] = ((len ushr 8) and 0xFF).toByte()
-            out[pos++] = (len and 0xFF).toByte()
-            System.arraycopy(nalu, 0, out, pos, len)
-            pos += len
-        }
-        return out
     }
 
     private fun exportMp4ToMediaStore(sourceFile: File, displayName: String): Uri? {
