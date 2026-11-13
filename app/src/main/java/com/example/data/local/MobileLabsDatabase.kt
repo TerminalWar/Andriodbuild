@@ -14,7 +14,7 @@ import androidx.room.RoomDatabase
         StreamDestinationEntity::class,
         RecordingClipEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class MobileLabsDatabase : RoomDatabase() {
@@ -30,7 +30,10 @@ abstract class MobileLabsDatabase : RoomDatabase() {
                     context.applicationContext,
                     MobileLabsDatabase::class.java,
                     "mobilelabs_studio.db"
-                ).build().also { INSTANCE = it }
+                )
+                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .build()
+                    .also { INSTANCE = it }
             }
         }
     }

@@ -3,13 +3,13 @@ package com.example.ui.viewmodel
 import android.app.Application
 import android.content.Intent
 import android.graphics.Bitmap
-import android.os.Build
 import android.os.Process
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.MobileLabsApplication
 import com.example.data.local.SceneCollectionEntity
 import com.example.data.model.AudioChannelConfig
+import com.example.data.model.AudioChannelId
 import com.example.data.model.AudioMeterReading
 import com.example.data.model.BroadcastTelemetry
 import com.example.data.model.ChatPlatform
@@ -30,6 +30,7 @@ import com.example.data.model.TransitionType
 import com.example.streaming.ChatConnectionStatus
 import com.example.streaming.MediaProjectionHolder
 import com.example.streaming.StreamBroadcastService
+import com.example.streaming.VideoOverlayManager
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +45,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
+import kotlin.math.abs
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
@@ -113,7 +115,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 id = "welcome-1",
                 platform = ChatPlatform.SYSTEM,
                 username = "mobileLabs",
-                message = "Studio ready. Enter any Twitch channel above to connect live IRC chat — zero paywalls, all features unlocked.",
+                message = "Pro broadcast engine ready. Connect Twitch IRC above or press F12 for keyboard shortcuts.",
                 nameColorHex = 0xFF31C3A2
             )
         )
@@ -137,8 +139,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val _hasAudioPermission = MutableStateFlow(false)
     val hasAudioPermission: StateFlow<Boolean> = _hasAudioPermission.asStateFlow()
 
-    private val _screenPreviewTick = MutableStateFlow(0L)
-    val screenPreviewTick: StateFlow<Long> = _screenPreviewTick.asStateFlow()
+    private val _previewTick = MutableStateFlow(0L)
+    val previewTick: StateFlow<Long> = _previewTick.asStateFlow()
 
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
@@ -170,7 +172,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 pipeline.currentAlert = alert
                 pipeline.currentGoal = goal
                 pipeline.currentChat = chat
+
+                // Keep active Video Overlays playing cleanly
+                val activeVideoUris = srcs
+                    .filter { it.type == SourceType.VIDEO_OVERLAY && !it.imageUri.isNullOrBlank() }
+                    .mapNotNull { it.imageUri }
+                    .toSet()
+                activeVideoUris.forEach { VideoOverlayManager.ensurePlaying(app, it) }
+                VideoOverlayManager.stopUnused(activeVideoUris)
             }.collect {}
+        }
+        viewModelScope.launch {
+            preferences.collect { prefs ->
+                pipeline.activePreferences = prefs
+                pipeline.updateLiveBitrate(prefs.videoBitrateKbps)
+                if (prefs.twitchChannel.isNotBlank() && chatClient.status.value == ChatConnectionStatus.DISCONNECTED) {
+                    chatClient.connect(prefs.twitchChannel)
+                }
+            }
         }
         viewModelScope.launch {
             chatClient.messages.collect { msg ->
@@ -187,31 +206,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 _telemetry.update { it.copy(isScreenCaptureActive = capturing) }
             }
         }
-        // 1Hz Telemetry & CPU monitor + 12Hz Screen Preview ticker
+        // 15Hz Preview Refresh + 1Hz Telemetry Watchdog
         viewModelScope.launch {
             var tick = 0
             while (isActive) {
-                if (MediaProjectionHolder.isScreenCapturing.value) {
-                    _screenPreviewTick.value = System.nanoTime()
+                val hasVideoOverlay = programSources.value.any { it.type == SourceType.VIDEO_OVERLAY }
+                if (MediaProjectionHolder.isScreenCapturing.value || hasVideoOverlay) {
+                    _previewTick.value = System.nanoTime()
                 }
-                if (tick % 12 == 0) {
+                if (tick % 15 == 0) {
                     updateTelemetry1Hz()
                 }
                 tick++
-                delay(80)
-            }
-        }
-        // Auto-connect Twitch chat if previously saved
-        viewModelScope.launch {
-            preferences.collect { prefs ->
-                if (prefs.twitchChannel.isNotBlank() && chatClient.status.value == ChatConnectionStatus.DISCONNECTED) {
-                    chatClient.connect(prefs.twitchChannel)
-                }
+                delay(66)
             }
         }
     }
 
     fun getLatestScreenBitmap(): Bitmap? = MediaProjectionHolder.getLatestScreenBitmap()
+
+    fun getVideoOverlayBitmap(uri: String?): Bitmap? = uri?.let { MediaProjectionHolder.getVideoOverlayFrame(it) }
 
     fun updatePermissions(cameraGranted: Boolean, audioGranted: Boolean) {
         val audioChanged = audioGranted != _hasAudioPermission.value
@@ -276,6 +290,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _selectedSourceId.value = null
     }
 
+    fun switchSceneByIndex(index: Int) {
+        val list = scenes.value
+        if (index in list.indices) {
+            selectScene(list[index].id)
+            showMessage("Switched to ${list[index].name}")
+        }
+    }
+
     fun transitionPreviewToProgram() {
         val targetId = previewScene.value?.id ?: return
         _programSceneId.value = targetId
@@ -323,6 +345,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             SourceType.SCREEN_CAPTURE -> NormalizedRect(0f, 0f, 1f, 1f)
             SourceType.CAMERA -> NormalizedRect(0.05f, 0.55f, 0.28f, 0.38f)
             SourceType.WEBCAM_FRAME -> NormalizedRect(0.045f, 0.54f, 0.29f, 0.40f)
+            SourceType.VIDEO_OVERLAY -> NormalizedRect(0.15f, 0.15f, 0.45f, 0.45f)
             SourceType.ALERTBOX -> NormalizedRect(0.25f, 0.05f, 0.50f, 0.14f)
             SourceType.DONATION_GOAL -> NormalizedRect(0.32f, 0.86f, 0.36f, 0.09f)
             SourceType.CHATBOX -> NormalizedRect(0.72f, 0.40f, 0.25f, 0.52f)
@@ -332,6 +355,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             SourceType.SCREEN_CAPTURE -> NormalizedRect(0f, 0.48f, 1f, 0.52f)
             SourceType.CAMERA -> NormalizedRect(0.06f, 0.05f, 0.88f, 0.30f)
             SourceType.WEBCAM_FRAME -> NormalizedRect(0.05f, 0.045f, 0.90f, 0.31f)
+            SourceType.VIDEO_OVERLAY -> NormalizedRect(0.10f, 0.25f, 0.80f, 0.30f)
             SourceType.ALERTBOX -> NormalizedRect(0.08f, 0.36f, 0.84f, 0.11f)
             SourceType.DONATION_GOAL -> NormalizedRect(0.08f, 0.38f, 0.84f, 0.08f)
             SourceType.CHATBOX -> NormalizedRect(0.06f, 0.72f, 0.88f, 0.24f)
@@ -351,7 +375,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     accentColorHex = accentColorHex
                 )
             )
-            // Bump existing sortOrders down so new source is on top
             existing.forEachIndexed { index, src ->
                 repo.updateSource(src.copy(sortOrder = index + 1))
             }
@@ -391,8 +414,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun moveSourceRect(source: StudioSource, orientation: OutputOrientation, dx: Float, dy: Float) {
         if (source.isLocked) return
         val rect = if (orientation == OutputOrientation.HORIZONTAL) source.hRect else source.vRect
-        val newX = (rect.x + dx).coerceIn(0f, (1f - rect.width).coerceAtLeast(0f))
-        val newY = (rect.y + dy).coerceIn(0f, (1f - rect.height).coerceAtLeast(0f))
+        var newX = (rect.x + dx).coerceIn(0f, (1f - rect.width).coerceAtLeast(0f))
+        var newY = (rect.y + dy).coerceIn(0f, (1f - rect.height).coerceAtLeast(0f))
+
+        // Magnetic OBS center-snap when Grid Snap is enabled
+        if (preferences.value.gridSnapEnabled) {
+            val centerX = newX + rect.width * 0.5f
+            val centerY = newY + rect.height * 0.5f
+            if (abs(centerX - 0.5f) < 0.015f) newX = (0.5f - rect.width * 0.5f).coerceIn(0f, 1f)
+            if (abs(centerY - 0.5f) < 0.015f) newY = (0.5f - rect.height * 0.5f).coerceIn(0f, 1f)
+        }
+
         val newRect = rect.copy(x = newX, y = newY)
         val updated = if (orientation == OutputOrientation.HORIZONTAL) {
             source.copy(hRect = newRect)
@@ -402,16 +434,59 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch { repo.updateSource(updated) }
     }
 
+    fun resizeSourceRect(source: StudioSource, orientation: OutputOrientation, dw: Float, dh: Float) {
+        if (source.isLocked) return
+        val rect = if (orientation == OutputOrientation.HORIZONTAL) source.hRect else source.vRect
+        val maxW = (1f - rect.x).coerceAtLeast(0.08f)
+        val maxH = (1f - rect.y).coerceAtLeast(0.06f)
+        val newW = (rect.width + dw).coerceIn(0.08f, maxW)
+        val newH = (rect.height + dh).coerceIn(0.06f, maxH)
+        val newRect = rect.copy(width = newW, height = newH)
+        val updated = if (orientation == OutputOrientation.HORIZONTAL) {
+            source.copy(hRect = newRect)
+        } else {
+            source.copy(vRect = newRect)
+        }
+        viewModelScope.launch { repo.updateSource(updated) }
+    }
+
+    fun nudgeSelectedSource(dx: Float, dy: Float) {
+        val id = _selectedSourceId.value ?: return
+        val list = if (preferences.value.studioModeEnabled) previewSources.value else programSources.value
+        val src = list.firstOrNull { it.id == id } ?: return
+        moveSourceRect(src, editingOrientation.value, dx, dy)
+    }
+
+    fun deleteSelectedSource() {
+        val id = _selectedSourceId.value ?: return
+        deleteSource(id)
+        showMessage("Source removed")
+    }
+
     fun setAudioGain(channel: AudioChannelConfig, gainDb: Float) {
-        viewModelScope.launch { repo.updateAudioChannel(channel.copy(gainDb = gainDb.coerceIn(-60f, 12f))) }
+        viewModelScope.launch { repo.updateAudioChannel(channel.copy(gainDb = gainDb.coerceIn(-48f, 12f))) }
     }
 
     fun toggleAudioMute(channel: AudioChannelConfig) {
         viewModelScope.launch { repo.updateAudioChannel(channel.copy(isMuted = !channel.isMuted)) }
     }
 
+    fun toggleChannelMuteById(channelId: AudioChannelId) {
+        val ch = audioChannels.value.firstOrNull { it.id == channelId.name } ?: return
+        toggleAudioMute(ch)
+        showMessage("${ch.name}: ${if (!ch.isMuted) "Muted" else "Unmuted"}")
+    }
+
     fun updateAudioChannel(channel: AudioChannelConfig) {
         viewModelScope.launch { repo.updateAudioChannel(channel) }
+    }
+
+    fun togglePrivacyShield() {
+        viewModelScope.launch {
+            val next = !preferences.value.privacyShieldActive
+            repo.updatePreferences { it.copy(privacyShieldActive = next) }
+            showMessage(if (next) "Privacy Shield ON — Screen capture hidden" else "Privacy Shield OFF — Screen live")
+        }
     }
 
     fun triggerTestWidgets() {
@@ -498,12 +573,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleStudioMode() {
         viewModelScope.launch {
-            repo.updatePreferences { it.copy(studioModeEnabled = !it.studioModeEnabled) }
+            val next = !preferences.value.studioModeEnabled
+            repo.updatePreferences { it.copy(studioModeEnabled = next) }
+            showMessage(if (next) "Studio Mode ON" else "Studio Mode OFF")
         }
     }
 
     fun updatePreferences(transform: (StudioPreferences) -> StudioPreferences) {
-        viewModelScope.launch { repo.updatePreferences(transform) }
+        viewModelScope.launch {
+            repo.updatePreferences(transform)
+        }
     }
 
     fun applyOverlayTheme(preset: OverlayThemePreset) {
@@ -544,13 +623,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleLiveStream() {
         val currentState = _telemetry.value.connectionState
-        if (currentState == StreamConnectionState.LIVE || currentState == StreamConnectionState.CONNECTING) {
+        if (currentState == StreamConnectionState.LIVE ||
+            currentState == StreamConnectionState.CONNECTING ||
+            currentState == StreamConnectionState.RECONNECTING
+        ) {
             pipeline.stopStreaming()
             _telemetry.update {
                 it.copy(
                     connectionState = StreamConnectionState.OFFLINE,
                     elapsedLiveSeconds = 0L,
                     currentBitrateKbps = 0,
+                    destinationHealth = emptyMap(),
                     statusMessage = "Stream ended"
                 )
             }
@@ -574,6 +657,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     connectionState = StreamConnectionState.CONNECTING,
                     elapsedLiveSeconds = 0L,
+                    targetBitrateKbps = preferences.value.videoBitrateKbps,
                     statusMessage = "Connecting to ${enabled.joinToString { d -> d.platform.displayName }}..."
                 )
             }
@@ -652,24 +736,29 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _telemetry.update { prev ->
             val nextConn = when {
                 stats.activeDestinations > 0 -> StreamConnectionState.LIVE
+                stats.reconnectingDestinations > 0 -> StreamConnectionState.RECONNECTING
                 prev.connectionState == StreamConnectionState.CONNECTING -> StreamConnectionState.CONNECTING
                 prev.connectionState == StreamConnectionState.ERROR -> StreamConnectionState.ERROR
                 else -> StreamConnectionState.OFFLINE
             }
-            val nextStatus = if (nextConn == StreamConnectionState.LIVE) {
-                "LIVE to ${stats.activeDestinations} destination${if (stats.activeDestinations > 1) "s" else ""}"
-            } else prev.statusMessage
+            val nextStatus = when (nextConn) {
+                StreamConnectionState.LIVE -> "LIVE to ${stats.activeDestinations} destination${if (stats.activeDestinations > 1) "s" else ""}"
+                StreamConnectionState.RECONNECTING -> "Reconnecting RTMP (${stats.reconnectingDestinations})..."
+                else -> prev.statusMessage
+            }
 
             prev.copy(
                 connectionState = nextConn,
-                elapsedLiveSeconds = if (nextConn == StreamConnectionState.LIVE) prev.elapsedLiveSeconds + 1 else 0L,
+                elapsedLiveSeconds = if (nextConn == StreamConnectionState.LIVE || nextConn == StreamConnectionState.RECONNECTING) prev.elapsedLiveSeconds + 1 else 0L,
                 elapsedRecordSeconds = if (prev.isRecording) prev.elapsedRecordSeconds + 1 else 0L,
                 currentBitrateKbps = stats.currentBitrateKbps,
+                targetBitrateKbps = stats.targetBitrateKbps,
                 currentFps = if (stats.currentFps > 0f) stats.currentFps else preferences.value.targetFps.toFloat(),
                 cpuUsagePercent = cpuPct,
                 droppedFrames = stats.droppedFrames,
                 totalFrames = stats.totalFrames,
                 activeDestinationsCount = stats.activeDestinations,
+                destinationHealth = stats.destinationHealth,
                 statusMessage = nextStatus
             )
         }

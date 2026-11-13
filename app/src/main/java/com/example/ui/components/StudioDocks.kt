@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,12 +18,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.automirrored.rounded.TrendingUp
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Add
@@ -42,12 +43,12 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.TextFields
-import androidx.compose.material.icons.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
@@ -100,6 +101,7 @@ import com.example.streaming.ChatConnectionStatus
 import com.example.ui.theme.LiveCrimsonBright
 import com.example.ui.theme.MintAccent
 import com.example.ui.theme.MintAccentBright
+import com.example.ui.theme.RecordAmber
 import com.example.ui.theme.StudioBorder
 import com.example.ui.theme.StudioDock
 import com.example.ui.theme.StudioElevated
@@ -139,7 +141,6 @@ fun ScenesDock(
             .background(StudioDock)
             .border(1.dp, StudioBorder)
     ) {
-        // Dock Header
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -187,7 +188,6 @@ fun ScenesDock(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Transition picker
                 Box {
                     Surface(
                         color = StudioElevated,
@@ -229,7 +229,7 @@ fun ScenesDock(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(vertical = 4.dp)
         ) {
-            items(scenes, key = { it.id }) { scene ->
+            itemsIndexed(scenes, key = { _, s -> s.id }) { idx, scene ->
                 val isSelected = scene.id == activeSceneId
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -238,7 +238,7 @@ fun ScenesDock(
                         .fillMaxWidth()
                         .background(if (isSelected) StudioElevated else Color.Transparent)
                         .clickable { onSelectScene(scene.id) }
-                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                        .padding(horizontal = 10.dp, vertical = 7.dp)
                         .testTag("scene_item_${scene.id}")
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
@@ -255,18 +255,29 @@ fun ScenesDock(
                             color = if (isSelected) TextPrimary else TextSecondary,
                             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
                         )
                     }
-                    if (scenes.size > 1 && isSelected) {
-                        Icon(
-                            Icons.Rounded.DeleteOutline,
-                            contentDescription = "Delete scene",
-                            tint = TextMuted,
-                            modifier = Modifier
-                                .size(16.dp)
-                                .clickable { onDeleteScene(scene.id) }
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (idx < 7) {
+                            Text(
+                                text = "F${idx + 1}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextMuted.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(end = 6.dp)
+                            )
+                        }
+                        if (scenes.size > 1 && isSelected) {
+                            Icon(
+                                Icons.Rounded.DeleteOutline,
+                                contentDescription = "Delete scene",
+                                tint = TextMuted,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable { onDeleteScene(scene.id) }
+                            )
+                        }
                     }
                 }
             }
@@ -304,10 +315,7 @@ fun SourcesDock(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Sources", style = MaterialTheme.typography.titleSmall, color = TextPrimary)
                 Spacer(Modifier.width(6.dp))
-                Surface(
-                    color = StudioElevated,
-                    shape = RoundedCornerShape(4.dp)
-                ) {
+                Surface(color = StudioElevated, shape = RoundedCornerShape(4.dp)) {
                     Text(
                         text = editingOrientation.aspectLabel,
                         style = MaterialTheme.typography.labelSmall,
@@ -341,7 +349,7 @@ fun SourcesDock(
 
         if (sources.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Tap + to add Camera, Screen Capture, or Overlays", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                Text("Tap + to add Camera, Screen Capture, or Video Overlays", color = TextMuted, style = MaterialTheme.typography.bodySmall)
             }
         } else {
             LazyColumn(
@@ -363,7 +371,7 @@ fun SourcesDock(
                             .fillMaxWidth()
                             .background(if (isSelected) StudioElevated else Color.Transparent)
                             .clickable { onSelectSource(src.id) }
-                            .padding(start = 10.dp + indent, end = 6.dp, top = 6.dp, bottom = 6.dp)
+                            .padding(start = 10.dp + indent, end = 6.dp, top = 5.dp, bottom = 5.dp)
                             .testTag("source_item_${src.id}")
                     ) {
                         Icon(
@@ -381,7 +389,6 @@ fun SourcesDock(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
-                        // Horizontal / Vertical independent visibility badge + eye
                         Icon(
                             imageVector = if (editingOrientation == OutputOrientation.HORIZONTAL) Icons.Rounded.DesktopWindows else Icons.Rounded.Smartphone,
                             contentDescription = null,
@@ -423,6 +430,7 @@ fun AudioMixerDock(
     channels: List<AudioChannelConfig>,
     readings: Map<String, AudioMeterReading>,
     hasAudioPermission: Boolean,
+    audioSampleRateHz: Int,
     onRequestAudioPermission: () -> Unit,
     onGainChange: (AudioChannelConfig, Float) -> Unit,
     onToggleMute: (AudioChannelConfig) -> Unit,
@@ -462,7 +470,8 @@ fun AudioMixerDock(
                     }
                 }
             } else {
-                Text("44.1 kHz Stereo", style = MaterialTheme.typography.labelSmall, color = MintAccent)
+                val khz = String.format(Locale.US, "%.1f kHz", audioSampleRateHz / 1000f)
+                Text("$khz AAC", style = MaterialTheme.typography.labelSmall, color = MintAccent)
             }
         }
 
@@ -499,6 +508,12 @@ fun AudioMixerDock(
                                     Text("GATE", color = MintAccent, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
                                 }
                             }
+                            if (ch.syncOffsetMs != 0) {
+                                Spacer(Modifier.width(4.dp))
+                                Surface(color = RecordAmber.copy(alpha = 0.15f), shape = RoundedCornerShape(3.dp)) {
+                                    Text("${ch.syncOffsetMs}ms", color = RecordAmber, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                                }
+                            }
                         }
                         Text(
                             text = dbText,
@@ -509,7 +524,6 @@ fun AudioMixerDock(
 
                     Spacer(Modifier.height(5.dp))
 
-                    // Authentic Segmented VU Meter Bar (-60 to 0 dBFS)
                     AudioVuMeterBar(
                         rmsDb = if (ch.isMuted) -60f else (meter?.rmsDb ?: -60f),
                         peakDb = if (ch.isMuted) -60f else (meter?.peakDb ?: -60f),
@@ -575,7 +589,6 @@ private fun AudioVuMeterBar(
         val w = size.width
         val h = size.height
 
-        // Draw segmented LED blocks like OBS/Streamlabs Mixer
         val totalSegments = 30
         val gap = 2f
         val segW = (w - gap * (totalSegments - 1)) / totalSegments
@@ -612,7 +625,7 @@ fun ChatDock(
     onSendLocalMessage: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var selectedTab by remember { mutableStateOf(0) } // 0 = Twitch, 1 = Multistream
+    var selectedTab by remember { mutableStateOf(0) }
     var channelInput by remember(twitchChannel) { mutableStateOf(twitchChannel) }
     var chatInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -629,7 +642,6 @@ fun ChatDock(
             .background(StudioDock)
             .border(1.dp, StudioBorder)
     ) {
-        // Top Live Status Header matching screenshot
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -646,7 +658,7 @@ fun ChatDock(
                         .background(
                             when (telemetry.connectionState) {
                                 StreamConnectionState.LIVE -> LiveCrimsonBright
-                                StreamConnectionState.CONNECTING -> Color(0xFFF59E0B)
+                                StreamConnectionState.CONNECTING, StreamConnectionState.RECONNECTING -> RecordAmber
                                 StreamConnectionState.ERROR -> Color(0xFFFF6B6B)
                                 StreamConnectionState.OFFLINE -> TextMuted
                             }
@@ -657,6 +669,7 @@ fun ChatDock(
                     text = when (telemetry.connectionState) {
                         StreamConnectionState.LIVE -> "Live ${formatDuration(telemetry.elapsedLiveSeconds)}"
                         StreamConnectionState.CONNECTING -> "Connecting..."
+                        StreamConnectionState.RECONNECTING -> "Reconnecting..."
                         StreamConnectionState.ERROR -> "Error"
                         StreamConnectionState.OFFLINE -> "Offline"
                     },
@@ -671,7 +684,6 @@ fun ChatDock(
             )
         }
 
-        // Stream Title Row
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -691,7 +703,6 @@ fun ChatDock(
             Icon(Icons.Rounded.Edit, contentDescription = "Edit stream title", tint = TextMuted, modifier = Modifier.size(14.dp))
         }
 
-        // Platform Tabs: Twitch / Multistream
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -722,7 +733,6 @@ fun ChatDock(
             }
         }
 
-        // Live Twitch IRC Channel Connect Bar
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -780,7 +790,6 @@ fun ChatDock(
             }
         }
 
-        // Messages Feed
         val filtered = remember(messages, selectedTab) {
             if (selectedTab == 0) {
                 messages.filter { it.platform == ChatPlatform.TWITCH || it.platform == ChatPlatform.SYSTEM }
@@ -831,7 +840,6 @@ fun ChatDock(
             }
         }
 
-        // Quick Host Note / Chatbox Test Input
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -879,10 +887,11 @@ fun sourceTypeIcon(type: SourceType) = when (type) {
     SourceType.SCREEN_CAPTURE -> Icons.Rounded.DesktopWindows
     SourceType.CAMERA -> Icons.Rounded.Videocam
     SourceType.WEBCAM_FRAME -> Icons.Rounded.CropSquare
+    SourceType.VIDEO_OVERLAY -> Icons.Rounded.Movie
     SourceType.IMAGE_OVERLAY -> Icons.Rounded.Image
     SourceType.TEXT_BANNER -> Icons.Rounded.TextFields
     SourceType.ALERTBOX -> Icons.Rounded.AutoAwesome
-    SourceType.DONATION_GOAL -> Icons.Rounded.TrendingUp
+    SourceType.DONATION_GOAL -> Icons.AutoMirrored.Rounded.TrendingUp
     SourceType.CHATBOX -> Icons.Rounded.ChatBubbleOutline
     SourceType.COLOR_SOURCE -> Icons.Rounded.Palette
     SourceType.FOLDER -> Icons.Rounded.Folder

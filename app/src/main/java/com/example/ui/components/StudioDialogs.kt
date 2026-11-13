@@ -33,6 +33,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Cameraswitch
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Visibility
@@ -53,6 +54,10 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -78,9 +83,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.AudioChannelConfig
+import com.example.data.model.DestinationHealthState
+import com.example.data.model.EncoderProfile
 import com.example.data.model.NormalizedRect
 import com.example.data.model.OutputOrientation
 import com.example.data.model.OverlayThemePreset
+import com.example.data.model.RateControlMode
 import com.example.data.model.RecordingClip
 import com.example.data.model.SourceType
 import com.example.data.model.StreamDestination
@@ -90,6 +98,7 @@ import com.example.data.model.StudioSource
 import com.example.ui.theme.LiveCrimsonBright
 import com.example.ui.theme.MintAccent
 import com.example.ui.theme.MintAccentBright
+import com.example.ui.theme.RecordAmber
 import com.example.ui.theme.StudioBorder
 import com.example.ui.theme.StudioDock
 import com.example.ui.theme.StudioElevated
@@ -155,16 +164,23 @@ fun AddSourceDialog(
     onDismiss: () -> Unit,
     onAddSource: (SourceType, String, String, String?) -> Unit
 ) {
+    val context = LocalContext.current
     var selectedType by remember { mutableStateOf(SourceType.CAMERA) }
     var customName by remember { mutableStateOf(SourceType.CAMERA.displayName) }
     var textBody by remember { mutableStateOf("FOLLOW FOR MORE LIVE STREAMS") }
-    var pickedImageUri by remember { mutableStateOf<String?>(null) }
+    var pickedMediaUri by remember { mutableStateOf<String?>(null) }
 
-    val photoPickerLauncher = rememberLauncherForActivityResult(
+    val mediaPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            pickedImageUri = uri.toString()
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            pickedMediaUri = uri.toString()
         }
     }
 
@@ -176,8 +192,8 @@ fun AddSourceDialog(
             color = StudioDock,
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .heightIn(max = 580.dp)
+                .fillMaxWidth(0.90f)
+                .heightIn(max = 600.dp)
                 .border(1.dp, StudioBorder, RoundedCornerShape(12.dp))
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
@@ -209,6 +225,7 @@ fun AddSourceDialog(
                                 .clickable {
                                     selectedType = type
                                     customName = type.displayName
+                                    pickedMediaUri = null
                                 }
                                 .padding(10.dp)
                         ) {
@@ -246,27 +263,32 @@ fun AddSourceDialog(
                     )
                 }
 
-                if (selectedType == SourceType.IMAGE_OVERLAY) {
+                if (selectedType == SourceType.IMAGE_OVERLAY || selectedType == SourceType.VIDEO_OVERLAY) {
                     Spacer(Modifier.height(8.dp))
                     OutlinedButton(
                         onClick = {
-                            photoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
+                            val typeFilter = if (selectedType == SourceType.VIDEO_OVERLAY) {
+                                ActivityResultContracts.PickVisualMedia.VideoOnly
+                            } else {
+                                ActivityResultContracts.PickVisualMedia.ImageOnly
+                            }
+                            mediaPickerLauncher.launch(PickVisualMediaRequest(typeFilter))
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            if (pickedImageUri != null) "Image Selected (Tap to Change)" else "Choose Image via Android Photo Picker",
-                            color = MintAccentBright
-                        )
+                        val label = if (selectedType == SourceType.VIDEO_OVERLAY) {
+                            if (pickedMediaUri != null) "Looping Video Selected (Tap to Change)" else "Choose MP4/WebM Video Overlay"
+                        } else {
+                            if (pickedMediaUri != null) "Image Selected (Tap to Change)" else "Choose Image via Photo Picker"
+                        }
+                        Text(label, color = MintAccentBright)
                     }
                 }
 
                 Spacer(Modifier.height(12.dp))
                 Button(
                     onClick = {
-                        onAddSource(selectedType, customName, textBody, pickedImageUri)
+                        onAddSource(selectedType, customName, textBody, pickedMediaUri)
                         onDismiss()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MintAccent, contentColor = StudioVoid),
@@ -291,7 +313,13 @@ fun SourcePropertiesDialog(
     var name by remember { mutableStateOf(source.name) }
     var textContent by remember { mutableStateOf(source.textContent) }
     var frontCam by remember { mutableStateOf(source.cameraFacingFront) }
+    var mirrorFront by remember { mutableStateOf(source.cameraMirror) }
+    var cameraZoom by remember { mutableFloatStateOf(source.cameraZoom) }
+    var cropToFill by remember { mutableStateOf(source.cropToFill) }
+    var opacity by remember { mutableFloatStateOf(source.opacity) }
     var accentHex by remember { mutableLongStateOf(source.accentColorHex) }
+    var posX by remember { mutableFloatStateOf(rect.x) }
+    var posY by remember { mutableFloatStateOf(rect.y) }
     var widthPct by remember { mutableFloatStateOf(rect.width) }
     var heightPct by remember { mutableFloatStateOf(rect.height) }
     var cornerDp by remember { mutableIntStateOf(source.cornerRadiusDp) }
@@ -302,6 +330,7 @@ fun SourcePropertiesDialog(
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(max = 620.dp)
                 .border(1.dp, StudioBorder, RoundedCornerShape(12.dp))
         ) {
             Column(
@@ -361,18 +390,86 @@ fun SourcePropertiesDialog(
                         }
                         Text("Switch", color = MintAccent, fontWeight = FontWeight.Bold)
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Mirror Front Camera", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                        Switch(
+                            checked = mirrorFront,
+                            onCheckedChange = { mirrorFront = it },
+                            colors = SwitchDefaults.colors(checkedTrackColor = MintAccent)
+                        )
+                    }
+                    Text(
+                        String.format(Locale.US, "Camera Zoom: %.1fx", cameraZoom),
+                        color = MintAccentBright,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Slider(
+                        value = cameraZoom,
+                        onValueChange = { cameraZoom = it },
+                        valueRange = 1.0f..4.0f,
+                        colors = SliderDefaults.colors(thumbColor = MintAccentBright, activeTrackColor = MintAccent)
+                    )
                 }
 
-                Spacer(Modifier.height(12.dp))
-                Text("Width: ${(widthPct * 100).toInt()}%", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                if (source.type == SourceType.SCREEN_CAPTURE || source.type == SourceType.CAMERA ||
+                    source.type == SourceType.IMAGE_OVERLAY || source.type == SourceType.VIDEO_OVERLAY
+                ) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Aspect Scaling", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                if (cropToFill) "Crop to Fill Box" else "Fit Proportional (No Crop)",
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Switch(
+                            checked = cropToFill,
+                            onCheckedChange = { cropToFill = it },
+                            colors = SwitchDefaults.colors(checkedTrackColor = MintAccent)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            posX = (1f - widthPct) * 0.5f
+                            posY = (1f - heightPct) * 0.5f
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Center", color = MintAccentBright, fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            posX = 0f; posY = 0f; widthPct = 1f; heightPct = 1f
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Fit Screen", color = MintAccentBright, fontSize = 12.sp)
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Text("Width: ${(widthPct * 100).toInt()}% • Height: ${(heightPct * 100).toInt()}%", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                 Slider(
                     value = widthPct,
                     onValueChange = { widthPct = it },
-                    valueRange = 0.12f..1.0f,
+                    valueRange = 0.08f..1.0f,
                     colors = SliderDefaults.colors(thumbColor = MintAccentBright, activeTrackColor = MintAccent)
                 )
-
-                Text("Height: ${(heightPct * 100).toInt()}%", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                 Slider(
                     value = heightPct,
                     onValueChange = { heightPct = it },
@@ -380,7 +477,13 @@ fun SourcePropertiesDialog(
                     colors = SliderDefaults.colors(thumbColor = MintAccentBright, activeTrackColor = MintAccent)
                 )
 
-                Text("Corner Radius: ${cornerDp}dp", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                Text("Opacity: ${(opacity * 100).toInt()}% • Radius: ${cornerDp}dp", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                Slider(
+                    value = opacity,
+                    onValueChange = { opacity = it },
+                    valueRange = 0.1f..1.0f,
+                    colors = SliderDefaults.colors(thumbColor = MintAccentBright, activeTrackColor = MintAccent)
+                )
                 Slider(
                     value = cornerDp.toFloat(),
                     onValueChange = { cornerDp = it.toInt() },
@@ -410,29 +513,26 @@ fun SourcePropertiesDialog(
                     Button(
                         onClick = {
                             val clampedRect = NormalizedRect(
-                                x = rect.x.coerceIn(0f, (1f - widthPct).coerceAtLeast(0f)),
-                                y = rect.y.coerceIn(0f, (1f - heightPct).coerceAtLeast(0f)),
+                                x = posX.coerceIn(0f, (1f - widthPct).coerceAtLeast(0f)),
+                                y = posY.coerceIn(0f, (1f - heightPct).coerceAtLeast(0f)),
                                 width = widthPct,
                                 height = heightPct
                             )
+                            val base = source.copy(
+                                name = name.ifBlank { source.name },
+                                textContent = textContent,
+                                cameraFacingFront = frontCam,
+                                cameraMirror = mirrorFront,
+                                cameraZoom = cameraZoom,
+                                cropToFill = cropToFill,
+                                opacity = opacity,
+                                accentColorHex = accentHex,
+                                cornerRadiusDp = cornerDp
+                            )
                             val updated = if (orientation == OutputOrientation.HORIZONTAL) {
-                                source.copy(
-                                    name = name.ifBlank { source.name },
-                                    textContent = textContent,
-                                    cameraFacingFront = frontCam,
-                                    accentColorHex = accentHex,
-                                    cornerRadiusDp = cornerDp,
-                                    hRect = clampedRect
-                                )
+                                base.copy(hRect = clampedRect)
                             } else {
-                                source.copy(
-                                    name = name.ifBlank { source.name },
-                                    textContent = textContent,
-                                    cameraFacingFront = frontCam,
-                                    accentColorHex = accentHex,
-                                    cornerRadiusDp = cornerDp,
-                                    vRect = clampedRect
-                                )
+                                base.copy(vRect = clampedRect)
                             }
                             onSave(updated)
                             onDismiss()
@@ -456,11 +556,12 @@ fun AudioChannelSettingsDialog(
     var gateEnabled by remember { mutableStateOf(channel.noiseGateEnabled) }
     var gateThreshold by remember { mutableFloatStateOf(channel.noiseGateThresholdDb) }
     var compressorEnabled by remember { mutableStateOf(channel.compressorEnabled) }
+    var syncOffsetMs by remember { mutableIntStateOf(channel.syncOffsetMs) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = StudioDock,
-        title = { Text("${channel.name} Filters", color = TextPrimary) },
+        title = { Text("${channel.name} Filters & Sync", color = TextPrimary) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
@@ -502,6 +603,15 @@ fun AudioChannelSettingsDialog(
                         colors = SwitchDefaults.colors(checkedTrackColor = MintAccent)
                     )
                 }
+                Column {
+                    Text("Audio Sync Offset: $syncOffsetMs ms", color = RecordAmber, style = MaterialTheme.typography.labelMedium)
+                    Slider(
+                        value = syncOffsetMs.toFloat(),
+                        onValueChange = { syncOffsetMs = (it / 25f).toInt() * 25 },
+                        valueRange = -500f..500f,
+                        colors = SliderDefaults.colors(thumbColor = RecordAmber, activeTrackColor = RecordAmber)
+                    )
+                }
             }
         },
         confirmButton = {
@@ -511,7 +621,8 @@ fun AudioChannelSettingsDialog(
                         channel.copy(
                             noiseGateEnabled = gateEnabled,
                             noiseGateThresholdDb = gateThreshold,
-                            compressorEnabled = compressorEnabled
+                            compressorEnabled = compressorEnabled,
+                            syncOffsetMs = syncOffsetMs
                         )
                     )
                     onDismiss()
@@ -527,10 +638,10 @@ fun AudioChannelSettingsDialog(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DestinationsSheetDialog(
     destinations: List<StreamDestination>,
+    healthMap: Map<Long, DestinationHealthState>,
     onDismiss: () -> Unit,
     onSaveDestination: (StreamDestination) -> Unit,
     onToggleEnabled: (StreamDestination) -> Unit,
@@ -546,7 +657,7 @@ fun DestinationsSheetDialog(
             color = StudioDock,
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
-                .fillMaxWidth(0.94f)
+                .fillMaxWidth(0.92f)
                 .heightIn(max = 620.dp)
                 .border(1.dp, StudioBorder, RoundedCornerShape(12.dp))
         ) {
@@ -600,13 +711,21 @@ fun DestinationsSheetDialog(
                     ) {
                         items(destinations, key = { it.id }) { dest ->
                             val hasKey = dest.streamKey.isNotBlank()
+                            val health = healthMap[dest.id] ?: DestinationHealthState.IDLE
+                            val healthBadgeColor = when (health) {
+                                DestinationHealthState.LIVE -> MintAccentBright
+                                DestinationHealthState.RECONNECTING -> RecordAmber
+                                DestinationHealthState.FAILED -> LiveCrimsonBright
+                                DestinationHealthState.CONNECTING -> RecordAmber
+                                DestinationHealthState.IDLE -> Color(dest.platform.colorHex)
+                            }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(StudioVoid.copy(alpha = 0.65f))
-                                    .border(1.dp, if (dest.isEnabled) Color(dest.platform.colorHex) else StudioBorder, RoundedCornerShape(8.dp))
+                                    .border(1.dp, if (dest.isEnabled) healthBadgeColor else StudioBorder, RoundedCornerShape(8.dp))
                                     .clickable { editingDest = dest }
                                     .padding(10.dp)
                             ) {
@@ -614,14 +733,19 @@ fun DestinationsSheetDialog(
                                     modifier = Modifier
                                         .size(10.dp)
                                         .clip(CircleShape)
-                                        .background(Color(dest.platform.colorHex))
+                                        .background(healthBadgeColor)
                                 )
                                 Spacer(Modifier.width(10.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(dest.name, color = TextPrimary, style = MaterialTheme.typography.titleSmall)
+                                    val statusText = when {
+                                        health != DestinationHealthState.IDLE -> health.name
+                                        hasKey -> "Key Ready"
+                                        else -> "Tap to add Stream Key"
+                                    }
                                     Text(
-                                        "${dest.platform.displayName} • ${dest.orientation.aspectLabel} • ${if (hasKey) "Key Set" else "Tap to add Stream Key"}",
-                                        color = if (hasKey) TextSecondary else Color(0xFFF59E0B),
+                                        "${dest.platform.displayName} • ${dest.orientation.aspectLabel} • $statusText",
+                                        color = if (hasKey) TextSecondary else RecordAmber,
                                         style = MaterialTheme.typography.bodySmall,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
@@ -750,117 +874,332 @@ private fun DestinationEditorForm(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StudioSettingsDialog(
     preferences: StudioPreferences,
     isScreenCaptureActive: Boolean,
     onDismiss: () -> Unit,
     onUpdatePreferences: ((StudioPreferences) -> StudioPreferences) -> Unit,
-    onToggleScreenCapture: () -> Unit
+    onToggleScreenCapture: () -> Unit,
+    onOpenKeyboardShortcuts: () -> Unit
 ) {
-    Dialog(onDismissRequest = onDismiss) {
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val tabs = listOf("Video & Stream", "Recording", "Audio", "Mobile Pro")
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Surface(
             color = StudioDock,
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxWidth(0.92f)
+                .heightIn(max = 620.dp)
                 .border(1.dp, StudioBorder, RoundedCornerShape(12.dp))
         ) {
-            Column(
-                modifier = Modifier
-                    .padding(16.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(StudioHeader)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Broadcast & Encoder Settings", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Rounded.Close, contentDescription = "Close", tint = TextSecondary)
+                    Text("OBS Studio Settings", style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onOpenKeyboardShortcuts) {
+                            Icon(Icons.Rounded.Keyboard, contentDescription = "Keyboard Shortcuts", tint = MintAccentBright)
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Rounded.Close, contentDescription = "Close", tint = TextSecondary)
+                        }
                     }
                 }
 
-                // Video Bitrate
-                Column {
-                    Text("Video Bitrate: ${preferences.videoBitrateKbps} kbps", color = MintAccentBright, style = MaterialTheme.typography.labelMedium)
-                    Slider(
-                        value = preferences.videoBitrateKbps.toFloat(),
-                        onValueChange = { val rounded = (it / 250f).toInt() * 250; onUpdatePreferences { p -> p.copy(videoBitrateKbps = rounded) } },
-                        valueRange = 1500f..10000f,
-                        colors = SliderDefaults.colors(thumbColor = MintAccentBright, activeTrackColor = MintAccent)
-                    )
-                }
-
-                // FPS Selector
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Frame Rate:", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
-                    listOf(30, 60).forEach { fps ->
-                        FilterChip(
-                            selected = preferences.targetFps == fps,
-                            onClick = { onUpdatePreferences { it.copy(targetFps = fps) } },
-                            label = { Text("$fps FPS") }
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = StudioHeader,
+                    contentColor = MintAccentBright,
+                    indicator = { positions ->
+                        TabRowDefaults.SecondaryIndicator(
+                            modifier = Modifier.tabIndicatorOffset(positions[selectedTab]),
+                            color = MintAccent
                         )
                     }
-                }
-
-                // Resolution Selector
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Output Res:", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
-                    listOf(720, 1080).forEach { res ->
-                        FilterChip(
-                            selected = preferences.resolutionHeight == res,
-                            onClick = { onUpdatePreferences { it.copy(resolutionHeight = res) } },
-                            label = { Text("${res}p") }
-                        )
-                    }
-                }
-
-                // Replay Buffer Duration
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Replay Buffer:", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
-                    listOf(15, 30, 60).forEach { sec ->
-                        FilterChip(
-                            selected = preferences.replayBufferSeconds == sec,
-                            onClick = { onUpdatePreferences { it.copy(replayBufferSeconds = sec) } },
-                            label = { Text("${sec}s") }
-                        )
-                    }
-                }
-
-                HorizontalDivider(color = StudioBorder)
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Studio Mode (Preview + Program)", color = TextPrimary, style = MaterialTheme.typography.titleSmall)
-                        Text("Stage next scene before pushing live", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                    tabs.forEachIndexed { idx, label ->
+                        Tab(
+                            selected = selectedTab == idx,
+                            onClick = { selectedTab = idx },
+                            text = { Text(label, fontSize = 11.sp, maxLines = 1) }
+                        )
                     }
-                    Switch(
-                        checked = preferences.studioModeEnabled,
-                        onCheckedChange = { enabled -> onUpdatePreferences { it.copy(studioModeEnabled = enabled) } },
-                        colors = SwitchDefaults.colors(checkedTrackColor = MintAccent)
-                    )
                 }
 
-                Button(
-                    onClick = onToggleScreenCapture,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isScreenCaptureActive) LiveCrimsonBright else StudioElevated,
-                        contentColor = TextPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .padding(16.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(if (isScreenCaptureActive) "Stop Screen / Game Capture" else "Start Android Screen / Game Capture")
+                    when (selectedTab) {
+                        0 -> {
+                            Text("Stream Video Bitrate: ${preferences.videoBitrateKbps} kbps", color = MintAccentBright, style = MaterialTheme.typography.labelMedium)
+                            Slider(
+                                value = preferences.videoBitrateKbps.toFloat(),
+                                onValueChange = { val r = (it / 250f).toInt() * 250; onUpdatePreferences { p -> p.copy(videoBitrateKbps = r) } },
+                                valueRange = 1000f..15000f,
+                                colors = SliderDefaults.colors(thumbColor = MintAccentBright, activeTrackColor = MintAccent)
+                            )
+
+                            Text("Output Resolution", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(480 to "480p", 720 to "720p HD", 1080 to "1080p FHD").forEach { (res, label) ->
+                                    FilterChip(
+                                        selected = preferences.resolutionHeight == res,
+                                        onClick = { onUpdatePreferences { it.copy(resolutionHeight = res) } },
+                                        label = { Text(label) }
+                                    )
+                                }
+                            }
+
+                            Text("Frame Rate (FPS)", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(24, 30, 48, 60).forEach { fps ->
+                                    FilterChip(
+                                        selected = preferences.targetFps == fps,
+                                        onClick = { onUpdatePreferences { it.copy(targetFps = fps) } },
+                                        label = { Text("$fps FPS") }
+                                    )
+                                }
+                            }
+
+                            Text("Rate Control & H.264 Profile", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                RateControlMode.entries.forEach { rc ->
+                                    FilterChip(
+                                        selected = preferences.rateControl == rc,
+                                        onClick = { onUpdatePreferences { it.copy(rateControl = rc) } },
+                                        label = { Text(rc.label) }
+                                    )
+                                }
+                            }
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                EncoderProfile.entries.forEach { prof ->
+                                    FilterChip(
+                                        selected = preferences.encoderProfile == prof,
+                                        onClick = { onUpdatePreferences { it.copy(encoderProfile = prof) } },
+                                        label = { Text(prof.label) }
+                                    )
+                                }
+                            }
+
+                            Text("Keyframe Interval: ${preferences.keyframeIntervalSec}s", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(1, 2, 3, 4).forEach { sec ->
+                                    FilterChip(
+                                        selected = preferences.keyframeIntervalSec == sec,
+                                        onClick = { onUpdatePreferences { it.copy(keyframeIntervalSec = sec) } },
+                                        label = { Text("${sec}s") }
+                                    )
+                                }
+                            }
+                        }
+
+                        1 -> {
+                            Text("Local Recording Bitrate: ${preferences.recordingBitrateKbps} kbps", color = MintAccentBright, style = MaterialTheme.typography.labelMedium)
+                            Text("Higher bitrate produces crisp local MP4 masters even if your live stream is 6,000 kbps.", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                            Slider(
+                                value = preferences.recordingBitrateKbps.toFloat(),
+                                onValueChange = { val r = (it / 500f).toInt() * 500; onUpdatePreferences { p -> p.copy(recordingBitrateKbps = r) } },
+                                valueRange = 4000f..25000f,
+                                colors = SliderDefaults.colors(thumbColor = MintAccentBright, activeTrackColor = MintAccent)
+                            )
+
+                            Text("Replay Buffer Length: ${preferences.replayBufferSeconds}s", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(15, 30, 60, 90, 120).forEach { sec ->
+                                    FilterChip(
+                                        selected = preferences.replayBufferSeconds == sec,
+                                        onClick = { onUpdatePreferences { it.copy(replayBufferSeconds = sec) } },
+                                        label = { Text("${sec}s") }
+                                    )
+                                }
+                            }
+
+                            Button(
+                                onClick = onToggleScreenCapture,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isScreenCaptureActive) LiveCrimsonBright else StudioElevated,
+                                    contentColor = TextPrimary
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(if (isScreenCaptureActive) "Stop Screen / Game Capture" else "Start Android Screen / Game Capture")
+                            }
+                        }
+
+                        2 -> {
+                            Text("Audio Sample Rate", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(44100 to "44.1 kHz", 48000 to "48 kHz").forEach { (rate, label) ->
+                                    FilterChip(
+                                        selected = preferences.audioSampleRateHz == rate,
+                                        onClick = { onUpdatePreferences { it.copy(audioSampleRateHz = rate) } },
+                                        label = { Text(label) }
+                                    )
+                                }
+                            }
+                            Text("AAC Audio Bitrate", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(96, 128, 160, 192, 320).forEach { kbps ->
+                                    FilterChip(
+                                        selected = preferences.audioBitrateKbps == kbps,
+                                        onClick = { onUpdatePreferences { it.copy(audioBitrateKbps = kbps) } },
+                                        label = { Text("$kbps kbps") }
+                                    )
+                                }
+                            }
+                        }
+
+                        3 -> {
+                            SettingsToggleRow(
+                                title = "Auto-Reconnect Drop Watchdog",
+                                subtitle = "Automatically reconnects RTMP drops during multi-hour streams",
+                                checked = preferences.autoReconnectEnabled,
+                                onCheckedChange = { v -> onUpdatePreferences { it.copy(autoReconnectEnabled = v) } }
+                            )
+                            SettingsToggleRow(
+                                title = "Dynamic Bitrate Adaptation",
+                                subtitle = "Adjusts bitrate smoothly on congested mobile networks",
+                                checked = preferences.dynamicBitrateEnabled,
+                                onCheckedChange = { v -> onUpdatePreferences { it.copy(dynamicBitrateEnabled = v) } }
+                            )
+                            SettingsToggleRow(
+                                title = "Keep Tablet / Phone Screen Awake",
+                                subtitle = "Prevents screen sleep during long live broadcasts",
+                                checked = preferences.keepScreenAwake,
+                                onCheckedChange = { v -> onUpdatePreferences { it.copy(keepScreenAwake = v) } }
+                            )
+                            SettingsToggleRow(
+                                title = "Privacy Shield (Hide Screen Capture)",
+                                subtitle = "Replaces game/screen feed with a safe shield banner instantly",
+                                checked = preferences.privacyShieldActive,
+                                onCheckedChange = { v -> onUpdatePreferences { it.copy(privacyShieldActive = v) } }
+                            )
+                            SettingsToggleRow(
+                                title = "Canvas Center Magnetic Snap",
+                                subtitle = "Snaps dragged overlays cleanly to canvas centerlines",
+                                checked = preferences.gridSnapEnabled,
+                                onCheckedChange = { v -> onUpdatePreferences { it.copy(gridSnapEnabled = v) } }
+                            )
+                            SettingsToggleRow(
+                                title = "Studio Mode (Preview + Program)",
+                                subtitle = "Stage scenes before transitioning live",
+                                checked = preferences.studioModeEnabled,
+                                onCheckedChange = { v -> onUpdatePreferences { it.copy(studioModeEnabled = v) } }
+                            )
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SettingsToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(title, color = TextPrimary, style = MaterialTheme.typography.titleSmall)
+            Text(subtitle, color = TextMuted, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(checkedTrackColor = MintAccent)
+        )
+    }
+}
+
+@Composable
+fun KeyboardShortcutsDialog(onDismiss: () -> Unit) {
+    val shortcuts = listOf(
+        "F1 – F7 / Ctrl + 1..7" to "Switch Scenes 1–7",
+        "Space / Enter" to "Transition Preview -> Program (Studio Mode)",
+        "Ctrl + L  or  F9" to "Go Live / End Stream",
+        "Ctrl + R  or  F10" to "Start / Stop Local MP4 Recording",
+        "Ctrl + B  or  F11" to "Save Instant Replay Clip",
+        "Ctrl + M" to "Mute / Unmute Mic/Aux",
+        "Ctrl + D" to "Mute / Unmute Desktop / Game Audio",
+        "Ctrl + P" to "Toggle Privacy Shield",
+        "Ctrl + T" to "Trigger Test Widgets (Alerts & Goal)",
+        "Ctrl + Shift + S" to "Toggle Studio Mode",
+        "Arrow Keys / Shift+Arrows" to "Nudge selected overlay (1% / 5%)",
+        "Delete" to "Remove selected overlay",
+        "F12  or  Ctrl + /" to "Open this Keyboard Shortcuts Guide"
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = StudioDock,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Keyboard, contentDescription = null, tint = MintAccentBright)
+                Spacer(Modifier.width(8.dp))
+                Text("Hardware Keyboard Hotkeys", color = TextPrimary)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                shortcuts.forEach { (keys, desc) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            color = StudioElevated,
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.border(1.dp, StudioBorder, RoundedCornerShape(4.dp))
+                        ) {
+                            Text(
+                                keys,
+                                color = MintAccentBright,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(desc, color = TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = MintAccent, contentColor = StudioVoid)
+            ) {
+                Text("Done", fontWeight = FontWeight.Bold)
+            }
+        }
+    )
 }
 
 @Composable

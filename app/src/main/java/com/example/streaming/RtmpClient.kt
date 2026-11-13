@@ -5,7 +5,6 @@ import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.InputStream
-import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
@@ -17,9 +16,8 @@ import javax.net.ssl.SSLSocketFactory
 import kotlin.random.Random
 
 /**
- * Pure-Kotlin RTMP 1.0 & RTMPS (TLS) ingest client.
- * Supports Twitch, YouTube Live, Kick, Facebook Live, TikTok, and Custom RTMP servers
- * without external binary dependencies or paywalls.
+ * Pure-Kotlin RTMP 1.0 & RTMPS (TLS) ingest client with connection error reporting
+ * for seamless multi-hour auto-reconnects.
  */
 class RtmpClient(
     val destinationId: Long,
@@ -35,13 +33,11 @@ class RtmpClient(
     private val writeLock = Any()
     private val bytesSent = AtomicLong(0L)
     private var chunkSizeOut = 4096
-    private var chunkSizeIn = 128
 
-    @Volatile
-    private var sentVideoConfig = false
-
-    @Volatile
-    private var sentAudioConfig = false
+    @Volatile private var sentVideoConfig = false
+    @Volatile private var sentAudioConfig = false
+    @Volatile var audioSampleRateHz: Int = 44100
+    @Volatile var audioBitrateKbps: Int = 160
 
     fun getAndResetBytesSent(): Long = bytesSent.getAndSet(0L)
 
@@ -49,6 +45,7 @@ class RtmpClient(
 
     fun connect(width: Int, height: Int, fps: Int, videoBitrateKbps: Int): Result<Unit> {
         return runCatching {
+            close()
             val fullUrl = buildFullUrl(rtmpUrl, streamKey)
             val parsed = parseRtmpUri(fullUrl)
             val useTls = parsed.scheme.equals("rtmps", ignoreCase = true)
@@ -57,6 +54,7 @@ class RtmpClient(
             val rawSocket = Socket().apply {
                 tcpNoDelay = true
                 soTimeout = 10_000
+                sendBufferSize = 256 * 1024
                 connect(InetSocketAddress(parsed.host, port), 8_000)
             }
             val activeSocket = if (useTls) {
@@ -75,13 +73,13 @@ class RtmpClient(
             performHandshake()
             sendSetChunkSize(chunkSizeOut)
             sendConnect(parsed.app, parsed.tcUrl)
-            drainServerResponses(timeoutMs = 1800)
+            drainServerResponses(timeoutMs = 1500)
             sendReleaseStream(parsed.streamName)
             sendFcPublish(parsed.streamName)
             sendCreateStream()
-            drainServerResponses(timeoutMs = 1200)
+            drainServerResponses(timeoutMs = 1000)
             sendPublish(parsed.streamName)
-            drainServerResponses(timeoutMs = 1200)
+            drainServerResponses(timeoutMs = 1000)
             sendMetaData(width, height, fps, videoBitrateKbps)
 
             sentVideoConfig = false
@@ -92,58 +90,59 @@ class RtmpClient(
         }
     }
 
-    fun sendAudioConfig(aacConfig: ByteArray) {
-        if (!isConnected.get() || sentAudioConfig) return
+    fun sendAudioConfig(aacConfig: ByteArray): Boolean {
+        if (!isConnected.get() || sentAudioConfig) return true
         val payload = ByteArray(2 + aacConfig.size)
-        payload[0] = 0xAF.toByte() // AAC, 44kHz, 16-bit, stereo flag
-        payload[1] = 0x00 // Sequence header
+        payload[0] = 0xAF.toByte()
+        payload[1] = 0x00
         System.arraycopy(aacConfig, 0, payload, 2, aacConfig.size)
-        sendRtmpPacket(chunkStreamId = 4, timestampMs = 0, msgType = 8, streamId = 1, payload = payload)
-        sentAudioConfig = true
+        val ok = sendRtmpPacket(chunkStreamId = 4, timestampMs = 0, msgType = 8, streamId = 1, payload = payload)
+        if (ok) sentAudioConfig = true
+        return ok
     }
 
-    fun sendAudioFrame(aacFrame: ByteArray, timestampMs: Int) {
-        if (!isConnected.get()) return
+    fun sendAudioFrame(aacFrame: ByteArray, timestampMs: Int): Boolean {
+        if (!isConnected.get()) return false
         val payload = ByteArray(2 + aacFrame.size)
         payload[0] = 0xAF.toByte()
-        payload[1] = 0x01 // Raw AAC frame
+        payload[1] = 0x01
         System.arraycopy(aacFrame, 0, payload, 2, aacFrame.size)
-        sendRtmpPacket(chunkStreamId = 4, timestampMs = timestampMs, msgType = 8, streamId = 1, payload = payload)
+        return sendRtmpPacket(chunkStreamId = 4, timestampMs = timestampMs, msgType = 8, streamId = 1, payload = payload)
     }
 
-    fun sendVideoConfig(sps: ByteArray, pps: ByteArray) {
-        if (!isConnected.get() || sentVideoConfig) return
+    fun sendVideoConfig(sps: ByteArray, pps: ByteArray): Boolean {
+        if (!isConnected.get() || sentVideoConfig) return true
         val out = ByteArrayOutputStream()
-        out.write(0x17) // Keyframe + AVC
-        out.write(0x00) // AVC sequence header
-        out.write(0x00); out.write(0x00); out.write(0x00) // Composition time 0
-        // AVCDecoderConfigurationRecord
-        out.write(0x01) // configurationVersion
-        out.write(if (sps.size > 1) sps[1].toInt() else 0x42) // profile
-        out.write(if (sps.size > 2) sps[2].toInt() else 0xC0) // compatibility
-        out.write(if (sps.size > 3) sps[3].toInt() else 0x1F) // level
-        out.write(0xFF) // lengthSizeMinusOne = 3 (4 bytes)
-        out.write(0xE1) // numOfSequenceParameterSets = 1
+        out.write(0x17)
+        out.write(0x00)
+        out.write(0x00); out.write(0x00); out.write(0x00)
+        out.write(0x01)
+        out.write(if (sps.size > 1) sps[1].toInt() else 0x42)
+        out.write(if (sps.size > 2) sps[2].toInt() else 0xC0)
+        out.write(if (sps.size > 3) sps[3].toInt() else 0x1F)
+        out.write(0xFF)
+        out.write(0xE1)
         out.write((sps.size shr 8) and 0xFF)
         out.write(sps.size and 0xFF)
         out.write(sps)
-        out.write(0x01) // numOfPictureParameterSets = 1
+        out.write(0x01)
         out.write((pps.size shr 8) and 0xFF)
         out.write(pps.size and 0xFF)
         out.write(pps)
 
-        sendRtmpPacket(chunkStreamId = 6, timestampMs = 0, msgType = 9, streamId = 1, payload = out.toByteArray())
-        sentVideoConfig = true
+        val ok = sendRtmpPacket(chunkStreamId = 6, timestampMs = 0, msgType = 9, streamId = 1, payload = out.toByteArray())
+        if (ok) sentVideoConfig = true
+        return ok
     }
 
-    fun sendVideoFrame(avccNalus: ByteArray, isKeyFrame: Boolean, timestampMs: Int) {
-        if (!isConnected.get() || !sentVideoConfig) return
+    fun sendVideoFrame(avccNalus: ByteArray, isKeyFrame: Boolean, timestampMs: Int): Boolean {
+        if (!isConnected.get() || !sentVideoConfig) return false
         val out = ByteArrayOutputStream(5 + avccNalus.size)
         out.write(if (isKeyFrame) 0x17 else 0x27)
-        out.write(0x01) // AVC NALU
+        out.write(0x01)
         out.write(0x00); out.write(0x00); out.write(0x00)
         out.write(avccNalus)
-        sendRtmpPacket(chunkStreamId = 6, timestampMs = timestampMs, msgType = 9, streamId = 1, payload = out.toByteArray())
+        return sendRtmpPacket(chunkStreamId = 6, timestampMs = timestampMs, msgType = 9, streamId = 1, payload = out.toByteArray())
     }
 
     fun close() {
@@ -159,10 +158,9 @@ class RtmpClient(
     private fun performHandshake() {
         val out = output!!
         val inp = input!!
-        out.write(0x03) // C0: RTMP version 3
+        out.write(0x03)
         val c1 = ByteArray(1536)
         Random.nextBytes(c1)
-        // Timestamp = 0, Zero = 0
         for (i in 0 until 8) c1[i] = 0
         out.write(c1)
         out.flush()
@@ -173,7 +171,6 @@ class RtmpClient(
         val s2 = readFully(inp, 1536)
         if (s2.size != 1536) throw IllegalStateException("Incomplete RTMP S2 handshake")
 
-        // Echo S1 as C2
         out.write(s1)
         out.flush()
     }
@@ -190,7 +187,7 @@ class RtmpClient(
         amf.writeObjectStart()
         amf.writeProperty("app", app)
         amf.writeProperty("type", "nonprivate")
-        amf.writeProperty("flashVer", "FMLE/3.0 (compatible; mobileLabs/1.0)")
+        amf.writeProperty("flashVer", "FMLE/3.0 (compatible; mobileLabs/2.0)")
         amf.writeProperty("tcUrl", tcUrl)
         amf.writeProperty("fpad", false)
         amf.writeProperty("capabilities", 15.0)
@@ -245,11 +242,11 @@ class RtmpClient(
         amf.writeProperty("width", width.toDouble())
         amf.writeProperty("height", height.toDouble())
         amf.writeProperty("framerate", fps.toDouble())
-        amf.writeProperty("videocodecid", 7.0) // AVC
+        amf.writeProperty("videocodecid", 7.0)
         amf.writeProperty("videodatarate", videoBitrateKbps.toDouble())
-        amf.writeProperty("audiocodecid", 10.0) // AAC
-        amf.writeProperty("audiodatarate", 128.0)
-        amf.writeProperty("audiosamplerate", 44100.0)
+        amf.writeProperty("audiocodecid", 10.0)
+        amf.writeProperty("audiodatarate", audioBitrateKbps.toDouble())
+        amf.writeProperty("audiosamplerate", audioSampleRateHz.toDouble())
         amf.writeProperty("audiosamplesize", 16.0)
         amf.writeProperty("stereo", false)
         amf.writeObjectEnd()
@@ -262,52 +259,55 @@ class RtmpClient(
         msgType: Int,
         streamId: Int,
         payload: ByteArray
-    ) {
-        synchronized(writeLock) {
-            val out = output ?: return
-            var offset = 0
-            val length = payload.size
-            var firstChunk = true
+    ): Boolean {
+        return synchronized(writeLock) {
+            val out = output ?: return@synchronized false
+            try {
+                var offset = 0
+                val length = payload.size
+                var firstChunk = true
 
-            while (offset < length || (firstChunk && length == 0)) {
-                val toWrite = minOf(chunkSizeOut, length - offset)
-                if (firstChunk) {
-                    // fmt = 0 (11-byte header)
-                    out.write(chunkStreamId and 0x3F)
-                    val ts = timestampMs.coerceAtLeast(0)
-                    val tsField = if (ts >= 0xFFFFFF) 0xFFFFFF else ts
-                    out.write((tsField shr 16) and 0xFF)
-                    out.write((tsField shr 8) and 0xFF)
-                    out.write(tsField and 0xFF)
-                    out.write((length shr 16) and 0xFF)
-                    out.write((length shr 8) and 0xFF)
-                    out.write(length and 0xFF)
-                    out.write(msgType and 0xFF)
-                    // streamId little-endian
-                    out.write(streamId and 0xFF)
-                    out.write((streamId shr 8) and 0xFF)
-                    out.write((streamId shr 16) and 0xFF)
-                    out.write((streamId shr 24) and 0xFF)
-                    if (ts >= 0xFFFFFF) {
-                        out.write((ts shr 24) and 0xFF)
-                        out.write((ts shr 16) and 0xFF)
-                        out.write((ts shr 8) and 0xFF)
-                        out.write(ts and 0xFF)
+                while (offset < length || (firstChunk && length == 0)) {
+                    val toWrite = minOf(chunkSizeOut, length - offset)
+                    if (firstChunk) {
+                        out.write(chunkStreamId and 0x3F)
+                        val ts = timestampMs.coerceAtLeast(0)
+                        val tsField = if (ts >= 0xFFFFFF) 0xFFFFFF else ts
+                        out.write((tsField shr 16) and 0xFF)
+                        out.write((tsField shr 8) and 0xFF)
+                        out.write(tsField and 0xFF)
+                        out.write((length shr 16) and 0xFF)
+                        out.write((length shr 8) and 0xFF)
+                        out.write(length and 0xFF)
+                        out.write(msgType and 0xFF)
+                        out.write(streamId and 0xFF)
+                        out.write((streamId shr 8) and 0xFF)
+                        out.write((streamId shr 16) and 0xFF)
+                        out.write((streamId shr 24) and 0xFF)
+                        if (ts >= 0xFFFFFF) {
+                            out.write((ts shr 24) and 0xFF)
+                            out.write((ts shr 16) and 0xFF)
+                            out.write((ts shr 8) and 0xFF)
+                            out.write(ts and 0xFF)
+                        }
+                        firstChunk = false
+                    } else {
+                        out.write(0xC0 or (chunkStreamId and 0x3F))
                     }
-                    firstChunk = false
-                } else {
-                    // fmt = 3 (1-byte continuation header)
-                    out.write(0xC0 or (chunkStreamId and 0x3F))
+                    if (toWrite > 0) {
+                        out.write(payload, offset, toWrite)
+                        offset += toWrite
+                        bytesSent.addAndGet(toWrite.toLong())
+                    } else {
+                        break
+                    }
                 }
-                if (toWrite > 0) {
-                    out.write(payload, offset, toWrite)
-                    offset += toWrite
-                    bytesSent.addAndGet(toWrite.toLong())
-                } else {
-                    break
-                }
+                out.flush()
+                true
+            } catch (_: Throwable) {
+                close()
+                false
             }
-            out.flush()
         }
     }
 
@@ -323,11 +323,10 @@ class RtmpClient(
                 if (inp.available() > 0) {
                     inp.read(tmp)
                 } else {
-                    Thread.sleep(50)
+                    Thread.sleep(40)
                 }
             }
         } catch (_: Throwable) {
-            // Non-fatal timeout while draining acks
         } finally {
             runCatching { sock.soTimeout = prevTimeout }
         }

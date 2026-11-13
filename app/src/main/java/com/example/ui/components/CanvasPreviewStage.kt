@@ -1,8 +1,10 @@
 package com.example.ui.components
 
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.net.Uri
 import android.view.ViewGroup
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -42,6 +44,9 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CastConnected
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.OpenInFull
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Videocam
@@ -53,12 +58,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -91,14 +98,15 @@ import com.example.streaming.MediaProjectionHolder
 import com.example.ui.theme.LiveCrimsonBright
 import com.example.ui.theme.MintAccent
 import com.example.ui.theme.MintAccentBright
+import com.example.ui.theme.RecordAmber
 import com.example.ui.theme.StudioBorder
 import com.example.ui.theme.StudioDock
 import com.example.ui.theme.StudioHeader
 import com.example.ui.theme.StudioVoid
-import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import java.util.concurrent.Executors
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @Composable
@@ -106,6 +114,7 @@ fun CanvasPreviewStage(
     horizontalEnabled: Boolean,
     verticalEnabled: Boolean,
     studioModeEnabled: Boolean,
+    privacyShieldActive: Boolean,
     editingOrientation: OutputOrientation,
     programScene: StudioScene?,
     previewScene: StudioScene?,
@@ -119,9 +128,11 @@ fun CanvasPreviewStage(
     hasCameraPermission: Boolean,
     isScreenCaptureActive: Boolean,
     screenBitmap: Bitmap?,
+    getVideoOverlayBitmap: (String?) -> Bitmap?,
     onSelectOrientation: (OutputOrientation) -> Unit,
     onSelectSource: (Long?) -> Unit,
     onMoveSource: (StudioSource, OutputOrientation, Float, Float) -> Unit,
+    onResizeSource: (StudioSource, OutputOrientation, Float, Float) -> Unit,
     onTransitionToProgram: () -> Unit,
     onRequestCameraPermission: () -> Unit,
     onRequestScreenCapture: () -> Unit,
@@ -131,10 +142,9 @@ fun CanvasPreviewStage(
         modifier = modifier
             .fillMaxWidth()
             .background(StudioVoid)
-            .padding(horizontal = 8.dp, vertical = 6.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
         if (studioModeEnabled) {
-            // OBS Studio Mode: Side-by-side Preview (Left) -> Transition Button -> Program (Right)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -162,10 +172,13 @@ fun CanvasPreviewStage(
                         recentChat = recentChat,
                         hasCameraPermission = hasCameraPermission,
                         isScreenCaptureActive = isScreenCaptureActive,
+                        privacyShieldActive = privacyShieldActive,
                         screenBitmap = screenBitmap,
+                        getVideoOverlayBitmap = getVideoOverlayBitmap,
                         isInteractive = true,
                         onSelectSource = onSelectSource,
                         onMoveSource = { src, dx, dy -> onMoveSource(src, editingOrientation, dx, dy) },
+                        onResizeSource = { src, dw, dh -> onResizeSource(src, editingOrientation, dw, dh) },
                         onRequestCameraPermission = onRequestCameraPermission,
                         onRequestScreenCapture = onRequestScreenCapture,
                         modifier = Modifier.weight(1f)
@@ -209,10 +222,13 @@ fun CanvasPreviewStage(
                         recentChat = recentChat,
                         hasCameraPermission = hasCameraPermission,
                         isScreenCaptureActive = isScreenCaptureActive,
+                        privacyShieldActive = privacyShieldActive,
                         screenBitmap = screenBitmap,
+                        getVideoOverlayBitmap = getVideoOverlayBitmap,
                         isInteractive = false,
                         onSelectSource = {},
                         onMoveSource = { _, _, _ -> },
+                        onResizeSource = { _, _, _ -> },
                         onRequestCameraPermission = onRequestCameraPermission,
                         onRequestScreenCapture = onRequestScreenCapture,
                         modifier = Modifier.weight(1f)
@@ -220,7 +236,6 @@ fun CanvasPreviewStage(
                 }
             }
         } else {
-            // Dual Output (Horizontal 16:9 + Vertical 9:16) matching screenshot
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -249,7 +264,7 @@ fun CanvasPreviewStage(
                                 )
                             }
                         )
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(3.dp))
                         InteractiveStudioCanvas(
                             orientation = OutputOrientation.HORIZONTAL,
                             scene = programScene,
@@ -260,7 +275,9 @@ fun CanvasPreviewStage(
                             recentChat = recentChat,
                             hasCameraPermission = hasCameraPermission,
                             isScreenCaptureActive = isScreenCaptureActive,
+                            privacyShieldActive = privacyShieldActive,
                             screenBitmap = screenBitmap,
+                            getVideoOverlayBitmap = getVideoOverlayBitmap,
                             isInteractive = true,
                             onSelectSource = {
                                 onSelectOrientation(OutputOrientation.HORIZONTAL)
@@ -269,6 +286,10 @@ fun CanvasPreviewStage(
                             onMoveSource = { src, dx, dy ->
                                 onSelectOrientation(OutputOrientation.HORIZONTAL)
                                 onMoveSource(src, OutputOrientation.HORIZONTAL, dx, dy)
+                            },
+                            onResizeSource = { src, dw, dh ->
+                                onSelectOrientation(OutputOrientation.HORIZONTAL)
+                                onResizeSource(src, OutputOrientation.HORIZONTAL, dw, dh)
                             },
                             onRequestCameraPermission = onRequestCameraPermission,
                             onRequestScreenCapture = onRequestScreenCapture,
@@ -298,7 +319,7 @@ fun CanvasPreviewStage(
                                 )
                             }
                         )
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(3.dp))
                         InteractiveStudioCanvas(
                             orientation = OutputOrientation.VERTICAL,
                             scene = programScene,
@@ -309,7 +330,9 @@ fun CanvasPreviewStage(
                             recentChat = recentChat,
                             hasCameraPermission = hasCameraPermission,
                             isScreenCaptureActive = isScreenCaptureActive,
+                            privacyShieldActive = privacyShieldActive,
                             screenBitmap = screenBitmap,
+                            getVideoOverlayBitmap = getVideoOverlayBitmap,
                             isInteractive = true,
                             onSelectSource = {
                                 onSelectOrientation(OutputOrientation.VERTICAL)
@@ -318,6 +341,10 @@ fun CanvasPreviewStage(
                             onMoveSource = { src, dx, dy ->
                                 onSelectOrientation(OutputOrientation.VERTICAL)
                                 onMoveSource(src, OutputOrientation.VERTICAL, dx, dy)
+                            },
+                            onResizeSource = { src, dw, dh ->
+                                onSelectOrientation(OutputOrientation.VERTICAL)
+                                onResizeSource(src, OutputOrientation.VERTICAL, dw, dh)
                             },
                             onRequestCameraPermission = onRequestCameraPermission,
                             onRequestScreenCapture = onRequestScreenCapture,
@@ -370,10 +397,13 @@ fun InteractiveStudioCanvas(
     recentChat: List<StreamChatMessage>,
     hasCameraPermission: Boolean,
     isScreenCaptureActive: Boolean,
+    privacyShieldActive: Boolean,
     screenBitmap: Bitmap?,
+    getVideoOverlayBitmap: (String?) -> Bitmap?,
     isInteractive: Boolean,
     onSelectSource: (Long?) -> Unit,
     onMoveSource: (StudioSource, Float, Float) -> Unit,
+    onResizeSource: (StudioSource, Float, Float) -> Unit,
     onRequestCameraPermission: () -> Unit,
     onRequestScreenCapture: () -> Unit,
     modifier: Modifier = Modifier
@@ -397,28 +427,43 @@ fun InteractiveStudioCanvas(
             val canvasWidthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
             val canvasHeightPx = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
 
-            // Studio calibration grid background
+            val selectedSrc = remember(sources, selectedSourceId) {
+                sources.firstOrNull { it.id == selectedSourceId }
+            }
+            val selectedRect = selectedSrc?.let {
+                if (orientation == OutputOrientation.HORIZONTAL) it.hRect else it.vRect
+            }
+            val showCenterGuideX = selectedRect != null && abs((selectedRect.x + selectedRect.width * 0.5f) - 0.5f) < 0.018f
+            val showCenterGuideY = selectedRect != null && abs((selectedRect.y + selectedRect.height * 0.5f) - 0.5f) < 0.018f
+
+            // Studio calibration grid + magnetic center snap lines
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val gridStep = size.width / 12f
                 var x = gridStep
                 while (x < size.width) {
-                    drawLine(
-                        color = Color(0x1431C3A2),
-                        start = Offset(x, 0f),
-                        end = Offset(x, size.height),
-                        strokeWidth = 1f
-                    )
+                    drawLine(Color(0x1431C3A2), Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
                     x += gridStep
                 }
                 var y = gridStep
                 while (y < size.height) {
-                    drawLine(
-                        color = Color(0x1431C3A2),
-                        start = Offset(0f, y),
-                        end = Offset(size.width, y),
-                        strokeWidth = 1f
-                    )
+                    drawLine(Color(0x1431C3A2), Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
                     y += gridStep
+                }
+                if (showCenterGuideX) {
+                    drawLine(
+                        color = LiveCrimsonBright.copy(alpha = 0.85f),
+                        start = Offset(size.width * 0.5f, 0f),
+                        end = Offset(size.width * 0.5f, size.height),
+                        strokeWidth = 2f
+                    )
+                }
+                if (showCenterGuideY) {
+                    drawLine(
+                        color = LiveCrimsonBright.copy(alpha = 0.85f),
+                        start = Offset(0f, size.height * 0.5f),
+                        end = Offset(size.width, size.height * 0.5f),
+                        strokeWidth = 2f
+                    )
                 }
             }
 
@@ -428,7 +473,6 @@ fun InteractiveStudioCanvas(
                 }
             }
 
-            // Render bottom-to-top
             val ordered = remember(sources) { sources.sortedByDescending { it.sortOrder } }
 
             ordered.forEach { src ->
@@ -440,7 +484,7 @@ fun InteractiveStudioCanvas(
                 val rect = if (orientation == OutputOrientation.HORIZONTAL) src.hRect else src.vRect
                 val leftPx = (rect.x * canvasWidthPx).roundToInt()
                 val topPx = (rect.y * canvasHeightPx).roundToInt()
-                val boxW = with(density) { (rect.width * canvasWidthPx).toDp() }.coerceAtLeast(20.dp)
+                val boxW = with(density) { (rect.width * canvasWidthPx).toDp() }.coerceAtLeast(24.dp)
                 val boxH = with(density) { (rect.height * canvasHeightPx).toDp() }.coerceAtLeast(20.dp)
                 val isSelected = selectedSourceId == src.id
 
@@ -466,7 +510,7 @@ fun InteractiveStudioCanvas(
                         .size(boxW, boxH)
                 }
 
-                Box(modifier = dragModifier) {
+                Box(modifier = dragModifier.alpha(src.opacity.coerceIn(0.1f, 1f))) {
                     SourceLayerRenderer(
                         source = src,
                         activeAlert = activeAlert,
@@ -474,7 +518,9 @@ fun InteractiveStudioCanvas(
                         recentChat = recentChat,
                         hasCameraPermission = hasCameraPermission,
                         isScreenCaptureActive = isScreenCaptureActive,
+                        privacyShieldActive = privacyShieldActive,
                         screenBitmap = screenBitmap,
+                        videoOverlayBitmap = if (src.type == SourceType.VIDEO_OVERLAY) getVideoOverlayBitmap(src.imageUri) else null,
                         onRequestCameraPermission = onRequestCameraPermission,
                         onRequestScreenCapture = onRequestScreenCapture
                     )
@@ -485,7 +531,6 @@ fun InteractiveStudioCanvas(
                                 .fillMaxSize()
                                 .border(2.dp, LiveCrimsonBright, RoundedCornerShape(4.dp))
                         ) {
-                            // Top-left source badge
                             Surface(
                                 color = LiveCrimsonBright,
                                 shape = RoundedCornerShape(bottomEnd = 4.dp),
@@ -508,14 +553,34 @@ fun InteractiveStudioCanvas(
                                     )
                                 }
                             }
-                            // Corner handles
-                            listOf(Alignment.TopEnd, Alignment.BottomStart, Alignment.BottomEnd).forEach { cornerAlign ->
+                            // Corner Resize Handle (Bottom-Right)
+                            if (!src.isLocked && isInteractive) {
                                 Box(
+                                    contentAlignment = Alignment.Center,
                                     modifier = Modifier
-                                        .align(cornerAlign)
-                                        .size(7.dp)
-                                        .background(MintAccentBright, CircleShape)
-                                )
+                                        .align(Alignment.BottomEnd)
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                        .background(MintAccentBright)
+                                        .border(1.5.dp, StudioVoid, CircleShape)
+                                        .pointerInput(src.id, orientation, canvasWidthPx, canvasHeightPx) {
+                                            detectDragGestures { change, dragAmount ->
+                                                change.consume()
+                                                onResizeSource(
+                                                    src,
+                                                    dragAmount.x / canvasWidthPx,
+                                                    dragAmount.y / canvasHeightPx
+                                                )
+                                            }
+                                        }
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.OpenInFull,
+                                        contentDescription = "Resize source",
+                                        tint = StudioVoid,
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -533,12 +598,15 @@ private fun SourceLayerRenderer(
     recentChat: List<StreamChatMessage>,
     hasCameraPermission: Boolean,
     isScreenCaptureActive: Boolean,
+    privacyShieldActive: Boolean,
     screenBitmap: Bitmap?,
+    videoOverlayBitmap: Bitmap?,
     onRequestCameraPermission: () -> Unit,
     onRequestScreenCapture: () -> Unit
 ) {
     val accent = Color(source.accentColorHex)
     val shape = RoundedCornerShape(source.cornerRadiusDp.dp)
+    val scaleMode = if (source.cropToFill) ContentScale.Crop else ContentScale.Fit
 
     when (source.type) {
         SourceType.SCREEN_CAPTURE -> {
@@ -549,11 +617,25 @@ private fun SourceLayerRenderer(
                     .background(Color(0xFF0B131D)),
                 contentAlignment = Alignment.Center
             ) {
-                if (isScreenCaptureActive && screenBitmap != null && !screenBitmap.isRecycled) {
+                if (privacyShieldActive) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF0E141E))
+                            .padding(8.dp)
+                    ) {
+                        Icon(Icons.Rounded.Shield, contentDescription = "Privacy Shield Active", tint = RecordAmber, modifier = Modifier.size(28.dp))
+                        Spacer(Modifier.height(4.dp))
+                        Text("PRIVACY SHIELD ACTIVE", color = RecordAmber, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Text("Screen capture hidden from viewers", color = TextSecondary, fontSize = 10.sp)
+                    }
+                } else if (isScreenCaptureActive && screenBitmap != null && !screenBitmap.isRecycled) {
                     Image(
                         bitmap = screenBitmap.asImageBitmap(),
                         contentDescription = "Live screen capture",
-                        contentScale = ContentScale.Crop,
+                        contentScale = scaleMode,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
@@ -616,6 +698,8 @@ private fun SourceLayerRenderer(
                 if (hasCameraPermission) {
                     CameraXPreviewBox(
                         lensFacingFront = source.cameraFacingFront,
+                        mirrorFront = source.cameraMirror,
+                        zoomRatio = source.cameraZoom,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
@@ -656,7 +740,7 @@ private fun SourceLayerRenderer(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(shape)
-                    .background(accent.copy(alpha = source.opacity))
+                    .background(accent)
             )
         }
 
@@ -665,7 +749,7 @@ private fun SourceLayerRenderer(
                 AsyncImage(
                     model = Uri.parse(source.imageUri),
                     contentDescription = source.name,
-                    contentScale = ContentScale.Fit,
+                    contentScale = scaleMode,
                     modifier = Modifier.fillMaxSize().clip(shape)
                 )
             } else {
@@ -678,6 +762,30 @@ private fun SourceLayerRenderer(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(source.name, color = TextSecondary, fontSize = 10.sp, textAlign = TextAlign.Center)
+                }
+            }
+        }
+
+        SourceType.VIDEO_OVERLAY -> {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(shape)
+                    .background(Color(0xFF121C28)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (videoOverlayBitmap != null && !videoOverlayBitmap.isRecycled) {
+                    Image(
+                        bitmap = videoOverlayBitmap.asImageBitmap(),
+                        contentDescription = source.name,
+                        contentScale = scaleMode,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(6.dp)) {
+                        Icon(Icons.Rounded.Movie, contentDescription = null, tint = MintAccentBright, modifier = Modifier.size(20.dp))
+                        Text(source.name, color = TextSecondary, fontSize = 9.sp, textAlign = TextAlign.Center, maxLines = 1)
+                    }
                 }
             }
         }
@@ -835,14 +943,23 @@ private fun SourceLayerRenderer(
 @Composable
 private fun CameraXPreviewBox(
     lensFacingFront: Boolean,
+    mirrorFront: Boolean,
+    zoomRatio: Float,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
+    var boundCamera by remember { mutableStateOf<Camera?>(null) }
 
-    DisposableEffect(lensFacingFront, previewView) {
+    LaunchedEffect(boundCamera, zoomRatio) {
+        runCatching {
+            boundCamera?.cameraControl?.setZoomRatio(zoomRatio.coerceIn(1f, 4f))
+        }
+    }
+
+    DisposableEffect(lensFacingFront, mirrorFront, previewView) {
         val view = previewView ?: return@DisposableEffect onDispose {}
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         val listener = Runnable {
@@ -858,8 +975,21 @@ private fun CameraXPreviewBox(
                     .also { analyzer ->
                         analyzer.setAnalyzer(cameraExecutor) { image: ImageProxy ->
                             runCatching {
-                                val bmp = image.toBitmap()
-                                MediaProjectionHolder.updateCameraBitmap(bmp)
+                                val raw = image.toBitmap()
+                                val rotation = image.imageInfo.rotationDegrees.toFloat()
+                                val shouldMirror = lensFacingFront && mirrorFront
+                                val finalBmp = if (rotation != 0f || shouldMirror) {
+                                    val m = Matrix().apply {
+                                        if (rotation != 0f) postRotate(rotation)
+                                        if (shouldMirror) postScale(-1f, 1f)
+                                    }
+                                    Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true).also {
+                                        raw.recycle()
+                                    }
+                                } else {
+                                    raw
+                                }
+                                MediaProjectionHolder.updateCameraBitmap(finalBmp)
                             }
                             image.close()
                         }
@@ -871,12 +1001,15 @@ private fun CameraXPreviewBox(
                     CameraSelector.DEFAULT_BACK_CAMERA
                 }
                 provider.unbindAll()
-                provider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
+                val cam = provider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
+                boundCamera = cam
+                cam.cameraControl.setZoomRatio(zoomRatio.coerceIn(1f, 4f))
             }
         }
         cameraProviderFuture.addListener(listener, ContextCompat.getMainExecutor(context))
 
         onDispose {
+            boundCamera = null
             runCatching {
                 cameraProviderFuture.get().unbindAll()
             }

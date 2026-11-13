@@ -51,6 +51,9 @@ data class StudioSourceEntity(
     val accentColorHex: Long = 0xFF31C3A2,
     val imageUri: String? = null,
     val cameraFacingFront: Boolean = true,
+    val cameraMirror: Boolean = true,
+    val cameraZoom: Float = 1.0f,
+    val cropToFill: Boolean = true,
     val opacity: Float = 1f,
     val cornerRadiusDp: Int = 10
 )
@@ -64,7 +67,8 @@ data class AudioChannelEntity(
     val noiseGateEnabled: Boolean = true,
     val noiseGateThresholdDb: Float = -45f,
     val compressorEnabled: Boolean = true,
-    val monitorEnabled: Boolean = false
+    val monitorEnabled: Boolean = false,
+    val syncOffsetMs: Int = 0
 )
 
 @Entity(tableName = "stream_destinations")
@@ -122,6 +126,9 @@ fun StudioSourceEntity.toDomain() = StudioSource(
     accentColorHex = accentColorHex,
     imageUri = imageUri,
     cameraFacingFront = cameraFacingFront,
+    cameraMirror = cameraMirror,
+    cameraZoom = cameraZoom,
+    cropToFill = cropToFill,
     opacity = opacity,
     cornerRadiusDp = cornerRadiusDp
 )
@@ -148,6 +155,9 @@ fun StudioSource.toEntity() = StudioSourceEntity(
     accentColorHex = accentColorHex,
     imageUri = imageUri,
     cameraFacingFront = cameraFacingFront,
+    cameraMirror = cameraMirror,
+    cameraZoom = cameraZoom,
+    cropToFill = cropToFill,
     opacity = opacity,
     cornerRadiusDp = cornerRadiusDp
 )
@@ -160,7 +170,8 @@ fun AudioChannelEntity.toDomain() = AudioChannelConfig(
     noiseGateEnabled = noiseGateEnabled,
     noiseGateThresholdDb = noiseGateThresholdDb,
     compressorEnabled = compressorEnabled,
-    monitorEnabled = monitorEnabled
+    monitorEnabled = monitorEnabled,
+    syncOffsetMs = syncOffsetMs
 )
 
 fun AudioChannelConfig.toEntity() = AudioChannelEntity(
@@ -171,7 +182,8 @@ fun AudioChannelConfig.toEntity() = AudioChannelEntity(
     noiseGateEnabled = noiseGateEnabled,
     noiseGateThresholdDb = noiseGateThresholdDb,
     compressorEnabled = compressorEnabled,
-    monitorEnabled = monitorEnabled
+    monitorEnabled = monitorEnabled,
+    syncOffsetMs = syncOffsetMs
 )
 
 fun StreamDestinationEntity.toDomain() = StreamDestination(

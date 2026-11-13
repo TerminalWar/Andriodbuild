@@ -12,9 +12,10 @@ enum class OutputOrientation(val label: String, val aspectLabel: String) {
 }
 
 enum class SourceType(val displayName: String, val description: String) {
-    SCREEN_CAPTURE("Screen / Game Capture", "Real-time Android MediaProjection display capture"),
-    CAMERA("Video Capture Device", "Live front or rear CameraX feed"),
+    SCREEN_CAPTURE("Screen / Game Capture", "Lag-free Android MediaProjection display capture"),
+    CAMERA("Video Capture Device", "Live front or rear CameraX feed with zoom & flip"),
     WEBCAM_FRAME("Webcam Frame", "Styled border & glow frame for your camera"),
+    VIDEO_OVERLAY("Media / Video Overlay", "Looping MP4/WebM animated overlay or stinger"),
     IMAGE_OVERLAY("Image / Logo", "PNG/JPG overlay from Android Photo Picker"),
     TEXT_BANNER("Text (GDI+ / Ticker)", "Custom stream label, handle, or BRB banner"),
     ALERTBOX("Alertbox", "Live follower, sub & tip pop-up notifications"),
@@ -58,6 +59,9 @@ data class StudioSource(
     val accentColorHex: Long = 0xFF31C3A2,
     val imageUri: String? = null,
     val cameraFacingFront: Boolean = true,
+    val cameraMirror: Boolean = true,
+    val cameraZoom: Float = 1.0f,
+    val cropToFill: Boolean = true,
     val opacity: Float = 1f,
     val cornerRadiusDp: Int = 10
 )
@@ -71,12 +75,13 @@ enum class AudioChannelId(val label: String) {
 data class AudioChannelConfig(
     val id: String,
     val name: String,
-    val gainDb: Float = 0f, // -60f to +12f
+    val gainDb: Float = 0f, // -48f to +12f
     val isMuted: Boolean = false,
     val noiseGateEnabled: Boolean = true,
     val noiseGateThresholdDb: Float = -45f,
     val compressorEnabled: Boolean = true,
-    val monitorEnabled: Boolean = false
+    val monitorEnabled: Boolean = false,
+    val syncOffsetMs: Int = 0 // -500 to +500 ms
 )
 
 data class AudioMeterReading(
@@ -152,16 +157,38 @@ data class RecordingClip(
     val createdAtMs: Long = System.currentTimeMillis()
 )
 
+enum class RateControlMode(val label: String) {
+    CBR("CBR (Constant)"),
+    VBR("VBR (Variable)")
+}
+
+enum class EncoderProfile(val label: String) {
+    BASELINE("Baseline (Low Latency)"),
+    MAIN("Main (Balanced)"),
+    HIGH("High (Best Quality)")
+}
+
 data class StudioPreferences(
-    val videoBitrateKbps: Int = 4500,
-    val targetFps: Int = 30,
-    val resolutionHeight: Int = 720, // 720 or 1080
+    val videoBitrateKbps: Int = 6000,
+    val recordingBitrateKbps: Int = 12000,
+    val targetFps: Int = 60,
+    val resolutionHeight: Int = 720, // 480, 720, or 1080
+    val keyframeIntervalSec: Int = 2,
+    val rateControl: RateControlMode = RateControlMode.CBR,
+    val encoderProfile: EncoderProfile = EncoderProfile.HIGH,
+    val audioBitrateKbps: Int = 160,
+    val audioSampleRateHz: Int = 44100,
     val horizontalEnabled: Boolean = true,
     val verticalEnabled: Boolean = true,
     val studioModeEnabled: Boolean = false,
     val replayBufferSeconds: Int = 30,
+    val autoReconnectEnabled: Boolean = true,
+    val dynamicBitrateEnabled: Boolean = true,
+    val keepScreenAwake: Boolean = true,
+    val privacyShieldActive: Boolean = false,
+    val gridSnapEnabled: Boolean = true,
     val twitchChannel: String = "",
-    val streamTitle: String = "Late Night Ranked Grind | mobileLabs",
+    val streamTitle: String = "Pro Mobile Stream | mobileLabs",
     val overlayThemeId: String = "mint_pro"
 )
 
@@ -178,7 +205,16 @@ enum class StreamConnectionState {
     OFFLINE,
     CONNECTING,
     LIVE,
+    RECONNECTING,
     ERROR
+}
+
+enum class DestinationHealthState {
+    IDLE,
+    CONNECTING,
+    LIVE,
+    RECONNECTING,
+    FAILED
 }
 
 data class BroadcastTelemetry(
@@ -189,11 +225,12 @@ data class BroadcastTelemetry(
     val elapsedLiveSeconds: Long = 0L,
     val elapsedRecordSeconds: Long = 0L,
     val currentBitrateKbps: Int = 0,
+    val targetBitrateKbps: Int = 6000,
     val currentFps: Float = 0f,
     val cpuUsagePercent: Float = 1.7f,
     val droppedFrames: Int = 0,
     val totalFrames: Int = 0,
     val activeDestinationsCount: Int = 0,
-    val connectedViewerHint: Int = 0,
+    val destinationHealth: Map<Long, DestinationHealthState> = emptyMap(),
     val statusMessage: String = "Ready — All features unlocked"
 )

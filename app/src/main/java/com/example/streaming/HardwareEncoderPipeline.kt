@@ -8,12 +8,16 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.view.Surface
+import com.example.data.model.DestinationHealthState
 import com.example.data.model.DonationGoalState
+import com.example.data.model.EncoderProfile
 import com.example.data.model.LiveAlertEvent
 import com.example.data.model.OutputOrientation
+import com.example.data.model.RateControlMode
 import com.example.data.model.RecordingClip
 import com.example.data.model.StreamChatMessage
 import com.example.data.model.StreamDestination
@@ -32,24 +36,29 @@ import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 data class PipelineStats(
     val currentFps: Float = 0f,
     val currentBitrateKbps: Int = 0,
+    val targetBitrateKbps: Int = 6000,
     val droppedFrames: Int = 0,
     val totalFrames: Int = 0,
     val activeDestinations: Int = 0,
-    val errorMessage: String? = null
+    val reconnectingDestinations: Int = 0,
+    val destinationHealth: Map<Long, DestinationHealthState> = emptyMap()
 )
 
 /**
- * Hardware H.264 + AAC MediaCodec pipeline supporting:
- * - Real local MP4 recording via MediaStore (Movies/mobileLabs)
- * - Real keyframe-aligned Replay Buffer for instant clip saving
- * - Real simultaneous RTMP/RTMPS multistream publishing
+ * Hardware H.264 + AAC MediaCodec pipeline built for multi-hour marathon stability:
+ * - Strictly monotonic presentation timestamps for MediaMuxer & RTMP
+ * - Automatic exponential-backoff RTMP reconnect watchdog per destination
+ * - CBR / VBR rate control, configurable keyframe interval, and H.264 profile
+ * - Dynamic bitrate adaptation and GOP-aligned Replay Buffer
  */
 class HardwareEncoderPipeline(
     private val context: Context,
@@ -65,6 +74,7 @@ class HardwareEncoderPipeline(
     private var renderJob: Job? = null
     private var videoDrainJob: Job? = null
     private var audioDrainJob: Job? = null
+    private var watchdogJob: Job? = null
 
     private val isPipelineRunning = AtomicBoolean(false)
     private val isStreamingActive = AtomicBoolean(false)
@@ -76,10 +86,11 @@ class HardwareEncoderPipeline(
     private var muxerVideoTrack = -1
     private var muxerAudioTrack = -1
     private var muxerStarted = false
-    private var recordingUri: Uri? = null
     private var recordingFile: File? = null
     private var recordingStartMs = 0L
     private var recordingOrientation = OutputOrientation.HORIZONTAL
+    private val lastMuxVideoPts = AtomicLong(-1L)
+    private val lastMuxAudioPts = AtomicLong(-1L)
 
     private var cachedVideoFormat: MediaFormat? = null
     private var cachedAudioFormat: MediaFormat? = null
@@ -87,7 +98,6 @@ class HardwareEncoderPipeline(
     private var cachedPps: ByteArray? = null
     private var cachedAacConfig: ByteArray? = null
 
-    // Replay Buffer (GOP-aligned rolling packets)
     private data class BufferedPacket(
         val isVideo: Boolean,
         val data: ByteArray,
@@ -97,45 +107,70 @@ class HardwareEncoderPipeline(
     private val replayBuffer = ConcurrentLinkedDeque<BufferedPacket>()
     private var maxReplayUs: Long = 30_000_000L
 
-    // Active RTMP clients
-    private val rtmpClients = mutableListOf<RtmpClient>()
-    private val rtmpLock = Any()
+    private val rtmpClients = ConcurrentHashMap<Long, RtmpClient>()
+    private val targetDestinations = ConcurrentHashMap<Long, StreamDestination>()
+    private val destinationHealth = ConcurrentHashMap<Long, DestinationHealthState>()
+    private val reconnectAttempts = ConcurrentHashMap<Long, Int>()
 
-    // Live Scene Snapshot State
     @Volatile var currentScene: StudioScene? = null
     @Volatile var currentSources: List<StudioSource> = emptyList()
     @Volatile var currentAlert: LiveAlertEvent? = null
     @Volatile var currentGoal: DonationGoalState = DonationGoalState()
     @Volatile var currentChat: List<StreamChatMessage> = emptyList()
     @Volatile var currentOrientation: OutputOrientation = OutputOrientation.HORIZONTAL
+    @Volatile var activePreferences: StudioPreferences = StudioPreferences()
 
     private val framesRendered = AtomicInteger(0)
     private val framesDropped = AtomicInteger(0)
     private val totalFramesCounter = AtomicInteger(0)
     private var pipelineStartNs = 0L
+    private var encodedWidth = 1280
+    private var encodedHeight = 720
+    @Volatile private var dynamicTargetBitrateKbps = 6000
+
+    fun updateLiveBitrate(bitrateKbps: Int) {
+        dynamicTargetBitrateKbps = bitrateKbps.coerceIn(800, 18000)
+        val codec = videoEncoder ?: return
+        runCatching {
+            val bundle = Bundle().apply {
+                putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, dynamicTargetBitrateKbps * 1000)
+            }
+            codec.setParameters(bundle)
+        }
+    }
 
     fun startStreaming(
         destinations: List<StreamDestination>,
         prefs: StudioPreferences,
-        onError: (String) -> Unit
+        onStatus: (String) -> Unit
     ) {
+        activePreferences = prefs
+        dynamicTargetBitrateKbps = prefs.videoBitrateKbps
         scope.launch(Dispatchers.IO) {
             val enabled = destinations.filter { it.isEnabled && it.rtmpUrl.isNotBlank() && it.streamKey.isNotBlank() }
             if (enabled.isEmpty()) {
-                onError("Add and enable at least one Stream Destination with a valid RTMP URL and Stream Key.")
+                onStatus("Add and enable at least one Stream Destination with a valid RTMP URL and Stream Key.")
                 return@launch
             }
 
-            ensurePipelineStarted(prefs)
-            val width = if (prefs.resolutionHeight >= 1080) 1920 else 1280
-            val height = if (prefs.resolutionHeight >= 1080) 1080 else 720
+            ensurePipelineStarted(prefs, forRecordingOnly = false)
+            targetDestinations.clear()
+            destinationHealth.clear()
+            reconnectAttempts.clear()
+            enabled.forEach { dest ->
+                targetDestinations[dest.id] = dest
+                destinationHealth[dest.id] = DestinationHealthState.CONNECTING
+            }
 
-            val connected = mutableListOf<RtmpClient>()
+            val connectedNames = mutableListOf<String>()
             val failures = mutableListOf<String>()
 
             for (dest in enabled) {
-                val client = RtmpClient(dest.id, dest.name, dest.rtmpUrl, dest.streamKey)
-                val res = client.connect(width, height, prefs.targetFps, prefs.videoBitrateKbps)
+                val client = RtmpClient(dest.id, dest.name, dest.rtmpUrl, dest.streamKey).apply {
+                    audioSampleRateHz = prefs.audioSampleRateHz
+                    audioBitrateKbps = prefs.audioBitrateKbps
+                }
+                val res = client.connect(encodedWidth, encodedHeight, prefs.targetFps, prefs.videoBitrateKbps)
                 if (res.isSuccess) {
                     cachedAacConfig?.let { client.sendAudioConfig(it) }
                     val sps = cachedSps
@@ -143,26 +178,64 @@ class HardwareEncoderPipeline(
                     if (sps != null && pps != null) {
                         client.sendVideoConfig(sps, pps)
                     }
-                    connected.add(client)
+                    rtmpClients[dest.id] = client
+                    destinationHealth[dest.id] = DestinationHealthState.LIVE
+                    connectedNames.add(dest.name)
                 } else {
+                    destinationHealth[dest.id] = DestinationHealthState.FAILED
                     failures.add("${dest.name}: ${res.exceptionOrNull()?.message ?: "Connection failed"}")
                 }
             }
 
-            synchronized(rtmpLock) {
-                rtmpClients.forEach { it.close() }
-                rtmpClients.clear()
-                rtmpClients.addAll(connected)
-            }
-
-            if (connected.isEmpty()) {
+            if (rtmpClients.isEmpty()) {
                 isStreamingActive.set(false)
                 stopPipelineIfIdle()
-                onError(failures.joinToString("\n").ifBlank { "Unable to connect to RTMP server." })
+                onStatus(failures.joinToString("\n").ifBlank { "Unable to connect to RTMP server." })
             } else {
                 isStreamingActive.set(true)
+                startWatchdog(prefs)
                 if (failures.isNotEmpty()) {
-                    onError("Connected ${connected.size}/${enabled.size}. Failed: ${failures.joinToString("; ")}")
+                    onStatus("Live on ${connectedNames.size}/${enabled.size}. Failed: ${failures.joinToString("; ")}")
+                }
+            }
+        }
+    }
+
+    private fun startWatchdog(prefs: StudioPreferences) {
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch(Dispatchers.IO) {
+            while (isActive && isStreamingActive.get()) {
+                delay(2500)
+                if (!activePreferences.autoReconnectEnabled) continue
+                for ((id, dest) in targetDestinations) {
+                    val client = rtmpClients[id]
+                    if (client == null || !client.isActive()) {
+                        val attempt = (reconnectAttempts[id] ?: 0) + 1
+                        reconnectAttempts[id] = attempt
+                        destinationHealth[id] = DestinationHealthState.RECONNECTING
+                        val backoffMs = (1500L * attempt).coerceAtMost(12_000L)
+                        delay(backoffMs)
+                        if (!isStreamingActive.get()) break
+
+                        val newClient = RtmpClient(dest.id, dest.name, dest.rtmpUrl, dest.streamKey).apply {
+                            audioSampleRateHz = prefs.audioSampleRateHz
+                            audioBitrateKbps = prefs.audioBitrateKbps
+                        }
+                        val res = newClient.connect(encodedWidth, encodedHeight, prefs.targetFps, dynamicTargetBitrateKbps)
+                        if (res.isSuccess) {
+                            cachedAacConfig?.let { newClient.sendAudioConfig(it) }
+                            val sps = cachedSps
+                            val pps = cachedPps
+                            if (sps != null && pps != null) {
+                                newClient.sendVideoConfig(sps, pps)
+                            }
+                            rtmpClients[id] = newClient
+                            destinationHealth[id] = DestinationHealthState.LIVE
+                            reconnectAttempts[id] = 0
+                        } else {
+                            destinationHealth[id] = DestinationHealthState.RECONNECTING
+                        }
+                    }
                 }
             }
         }
@@ -170,24 +243,29 @@ class HardwareEncoderPipeline(
 
     fun stopStreaming() {
         isStreamingActive.set(false)
-        synchronized(rtmpLock) {
-            rtmpClients.forEach { it.close() }
-            rtmpClients.clear()
-        }
+        watchdogJob?.cancel()
+        watchdogJob = null
+        rtmpClients.values.forEach { it.close() }
+        rtmpClients.clear()
+        targetDestinations.clear()
+        destinationHealth.clear()
+        reconnectAttempts.clear()
         stopPipelineIfIdle()
     }
 
     fun startRecording(prefs: StudioPreferences, orientation: OutputOrientation): Boolean {
         if (isRecordingActive.get()) return true
+        activePreferences = prefs
         recordingOrientation = orientation
-        ensurePipelineStarted(prefs)
+        ensurePipelineStarted(prefs, forRecordingOnly = !isStreamingActive.get())
 
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val fileName = "mobileLabs_$timestamp.mp4"
-
         val tempFile = File(context.cacheDir, fileName)
         recordingFile = tempFile
         recordingStartMs = System.currentTimeMillis()
+        lastMuxVideoPts.set(-1L)
+        lastMuxAudioPts.set(-1L)
 
         val muxer = runCatching {
             MediaMuxer(tempFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
@@ -215,9 +293,7 @@ class HardwareEncoderPipeline(
         val durationSec = ((System.currentTimeMillis() - recordingStartMs) / 1000L).coerceAtLeast(1L)
 
         synchronized(muxerLock) {
-            runCatching {
-                if (muxerStarted) mediaMuxer?.stop()
-            }
+            runCatching { if (muxerStarted) mediaMuxer?.stop() }
             runCatching { mediaMuxer?.release() }
             mediaMuxer = null
             muxerVideoTrack = -1
@@ -247,15 +323,11 @@ class HardwareEncoderPipeline(
         }
     }
 
-    fun startReplayBuffer(prefs: StudioPreferences) {
-        maxReplayUs = prefs.replayBufferSeconds.coerceIn(10, 120) * 1_000_000L
-        ensurePipelineStarted(prefs)
-    }
-
     fun saveReplayClip(prefs: StudioPreferences, onSaved: (RecordingClip?) -> Unit) {
+        activePreferences = prefs
         scope.launch(Dispatchers.IO) {
             if (!isPipelineRunning.get()) {
-                ensurePipelineStarted(prefs)
+                ensurePipelineStarted(prefs, forRecordingOnly = true)
                 delay(1200)
             }
             val snapshot = replayBuffer.toList()
@@ -289,9 +361,18 @@ class HardwareEncoderPipeline(
 
                 val basePts = trimmed.first().ptsUs
                 var lastPts = basePts
+                var prevV = -1L
+                var prevA = -1L
                 val info = MediaCodec.BufferInfo()
                 for (pkt in trimmed) {
-                    val pts = (pkt.ptsUs - basePts).coerceAtLeast(0L)
+                    var pts = (pkt.ptsUs - basePts).coerceAtLeast(0L)
+                    if (pkt.isVideo) {
+                        pts = maxOf(pts, prevV + 1L)
+                        prevV = pts
+                    } else {
+                        pts = maxOf(pts, prevA + 1L)
+                        prevA = pts
+                    }
                     lastPts = maxOf(lastPts, pkt.ptsUs)
                     info.set(0, pkt.data.size, pts, pkt.flags)
                     muxer.writeSampleData(
@@ -325,31 +406,40 @@ class HardwareEncoderPipeline(
 
     fun collectStats(): PipelineStats {
         val fps = framesRendered.getAndSet(0).toFloat()
-        val bytes = synchronized(rtmpLock) {
-            rtmpClients.sumOf { it.getAndResetBytesSent() }
-        }
+        val bytes = rtmpClients.values.sumOf { it.getAndResetBytesSent() }
         val kbps = ((bytes * 8L) / 1000L).toInt()
-        val activeCount = synchronized(rtmpLock) {
-            rtmpClients.count { it.isActive() }
-        }
+        val activeCount = rtmpClients.values.count { it.isActive() }
+        val reconnectingCount = destinationHealth.values.count { it == DestinationHealthState.RECONNECTING }
         return PipelineStats(
             currentFps = if (isPipelineRunning.get()) fps else 0f,
             currentBitrateKbps = kbps,
+            targetBitrateKbps = dynamicTargetBitrateKbps,
             droppedFrames = framesDropped.get(),
             totalFrames = totalFramesCounter.get(),
-            activeDestinations = activeCount
+            activeDestinations = activeCount,
+            reconnectingDestinations = reconnectingCount,
+            destinationHealth = destinationHealth.toMap()
         )
     }
 
-    private fun ensurePipelineStarted(prefs: StudioPreferences) {
+    private fun ensurePipelineStarted(prefs: StudioPreferences, forRecordingOnly: Boolean) {
         if (isPipelineRunning.getAndSet(true)) return
         maxReplayUs = prefs.replayBufferSeconds.coerceIn(10, 120) * 1_000_000L
 
         val isVertical = currentOrientation == OutputOrientation.VERTICAL
-        val baseH = if (prefs.resolutionHeight >= 1080) 1080 else 720
+        val baseH = when {
+            prefs.resolutionHeight >= 1080 -> 1080
+            prefs.resolutionHeight <= 480 -> 480
+            else -> 720
+        }
         val width = if (isVertical) baseH else (baseH * 16 / 9)
         val height = if (isVertical) (baseH * 16 / 9) else baseH
-        val bitrateBps = prefs.videoBitrateKbps * 1000
+        encodedWidth = width
+        encodedHeight = height
+
+        val targetKbps = if (forRecordingOnly) prefs.recordingBitrateKbps else prefs.videoBitrateKbps
+        dynamicTargetBitrateKbps = targetKbps
+        val bitrateBps = targetKbps * 1000
         val fps = prefs.targetFps.coerceIn(24, 60)
 
         runCatching {
@@ -357,10 +447,35 @@ class HardwareEncoderPipeline(
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, prefs.keyframeIntervalSec.coerceIn(1, 5))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    val mode = if (prefs.rateControl == RateControlMode.CBR) {
+                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                    } else {
+                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                    }
+                    setInteger(MediaFormat.KEY_BITRATE_MODE, mode)
+                }
+                val profileInt = when (prefs.encoderProfile) {
+                    EncoderProfile.BASELINE -> MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline
+                    EncoderProfile.MAIN -> MediaCodecInfo.CodecProfileLevel.AVCProfileMain
+                    EncoderProfile.HIGH -> MediaCodecInfo.CodecProfileLevel.AVCProfileHigh
+                }
+                setInteger(MediaFormat.KEY_PROFILE, profileInt)
             }
             val vCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            vCodec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            runCatching {
+                vCodec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }.onFailure {
+                // Fallback without strict profile/CBR if a chipset restricts them
+                val fallback = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                    setInteger(MediaFormat.KEY_BIT_RATE, bitrateBps)
+                    setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, prefs.keyframeIntervalSec.coerceIn(1, 5))
+                }
+                vCodec.configure(fallback, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }
             val surface = vCodec.createInputSurface()
             vCodec.start()
             videoEncoder = vCodec
@@ -372,7 +487,7 @@ class HardwareEncoderPipeline(
                 1
             ).apply {
                 setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-                setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
+                setInteger(MediaFormat.KEY_BIT_RATE, prefs.audioBitrateKbps * 1000)
                 setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
             }
             val aCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
@@ -397,10 +512,10 @@ class HardwareEncoderPipeline(
     }
 
     private fun startRenderLoop(surface: Surface, width: Int, height: Int, fps: Int) {
-        val frameIntervalMs = (1000L / fps).coerceAtLeast(16L)
+        val frameIntervalNs = 1_000_000_000L / fps.coerceIn(24, 60)
         renderJob = scope.launch(Dispatchers.Default) {
+            var nextFrameDeadlineNs = System.nanoTime()
             while (isActive && isPipelineRunning.get()) {
-                val frameStart = System.currentTimeMillis()
                 try {
                     val canvas = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         surface.lockHardwareCanvas()
@@ -417,7 +532,8 @@ class HardwareEncoderPipeline(
                             sources = currentSources,
                             activeAlert = currentAlert,
                             donationGoal = currentGoal,
-                            recentChat = currentChat
+                            recentChat = currentChat,
+                            privacyShieldActive = activePreferences.privacyShieldActive
                         )
                     } finally {
                         surface.unlockCanvasAndPost(canvas)
@@ -427,9 +543,14 @@ class HardwareEncoderPipeline(
                 } catch (_: Throwable) {
                     framesDropped.incrementAndGet()
                 }
-                val elapsed = System.currentTimeMillis() - frameStart
-                val sleep = frameIntervalMs - elapsed
-                if (sleep > 1) delay(sleep)
+                nextFrameDeadlineNs += frameIntervalNs
+                val sleepNs = nextFrameDeadlineNs - System.nanoTime()
+                if (sleepNs > 1_000_000L) {
+                    delay(sleepNs / 1_000_000L)
+                } else if (sleepNs < -frameIntervalNs * 3) {
+                    // Re-sync deadline if system lagged briefly
+                    nextFrameDeadlineNs = System.nanoTime()
+                }
             }
         }
     }
@@ -448,7 +569,7 @@ class HardwareEncoderPipeline(
                     buf.put((s and 0xFF).toByte())
                     buf.put(((s ushr 8) and 0xFF).toByte())
                 }
-                val ptsUs = (System.nanoTime() - pipelineStartNs) / 1000L
+                val ptsUs = ((System.nanoTime() - pipelineStartNs) / 1000L).coerceAtLeast(0L)
                 codec.queueInputBuffer(inIdx, 0, bytesLen, ptsUs, 0)
             }
         } catch (_: Throwable) {
@@ -489,26 +610,28 @@ class HardwareEncoderPipeline(
                                 if (isConfig) {
                                     parseAnnexBConfig(bytes)
                                 } else {
-                                    val ptsUs = (System.nanoTime() - pipelineStartNs) / 1000L
-                                    // Write to MP4 Muxer
+                                    val rawPts = ((System.nanoTime() - pipelineStartNs) / 1000L).coerceAtLeast(0L)
+                                    val monoPts = lastMuxVideoPts.updateAndGet { prev -> maxOf(prev + 1L, rawPts) }
+
                                     synchronized(muxerLock) {
                                         if (muxerStarted && muxerVideoTrack >= 0) {
-                                            info.presentationTimeUs = ptsUs
-                                            mediaMuxer?.writeSampleData(muxerVideoTrack, ByteBuffer.wrap(bytes), info)
+                                            info.presentationTimeUs = monoPts
+                                            runCatching {
+                                                mediaMuxer?.writeSampleData(muxerVideoTrack, ByteBuffer.wrap(bytes), info)
+                                            }
                                         }
                                     }
-                                    // Push to Replay Buffer
                                     appendReplayPacket(
-                                        BufferedPacket(isVideo = true, data = bytes, ptsUs = ptsUs, flags = info.flags)
+                                        BufferedPacket(isVideo = true, data = bytes, ptsUs = monoPts, flags = info.flags)
                                     )
-                                    // Push to RTMP Clients
                                     if (isStreamingActive.get()) {
                                         val isKey = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
                                         val avcc = annexBToAvcc(bytes)
-                                        val tsMs = (ptsUs / 1000L).toInt()
-                                        synchronized(rtmpLock) {
-                                            rtmpClients.forEach { client ->
-                                                runCatching { client.sendVideoFrame(avcc, isKey, tsMs) }
+                                        val tsMs = (monoPts / 1000L).toInt()
+                                        for ((id, client) in rtmpClients) {
+                                            val ok = client.sendVideoFrame(avcc, isKey, tsMs)
+                                            if (!ok) {
+                                                destinationHealth[id] = DestinationHealthState.RECONNECTING
                                             }
                                         }
                                     }
@@ -538,9 +661,7 @@ class HardwareEncoderPipeline(
                                 val arr = ByteArray(csd.remaining())
                                 csd.get(arr)
                                 cachedAacConfig = arr
-                                synchronized(rtmpLock) {
-                                    rtmpClients.forEach { it.sendAudioConfig(arr) }
-                                }
+                                rtmpClients.values.forEach { it.sendAudioConfig(arr) }
                             }
                             synchronized(muxerLock) {
                                 if (mediaMuxer != null && muxerAudioTrack < 0) {
@@ -564,25 +685,28 @@ class HardwareEncoderPipeline(
                                 val isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
                                 if (isConfig) {
                                     cachedAacConfig = bytes
-                                    synchronized(rtmpLock) {
-                                        rtmpClients.forEach { it.sendAudioConfig(bytes) }
-                                    }
+                                    rtmpClients.values.forEach { it.sendAudioConfig(bytes) }
                                 } else {
-                                    val ptsUs = (System.nanoTime() - pipelineStartNs) / 1000L
+                                    val rawPts = ((System.nanoTime() - pipelineStartNs) / 1000L).coerceAtLeast(0L)
+                                    val monoPts = lastMuxAudioPts.updateAndGet { prev -> maxOf(prev + 1L, rawPts) }
+
                                     synchronized(muxerLock) {
                                         if (muxerStarted && muxerAudioTrack >= 0) {
-                                            info.presentationTimeUs = ptsUs
-                                            mediaMuxer?.writeSampleData(muxerAudioTrack, ByteBuffer.wrap(bytes), info)
+                                            info.presentationTimeUs = monoPts
+                                            runCatching {
+                                                mediaMuxer?.writeSampleData(muxerAudioTrack, ByteBuffer.wrap(bytes), info)
+                                            }
                                         }
                                     }
                                     appendReplayPacket(
-                                        BufferedPacket(isVideo = false, data = bytes, ptsUs = ptsUs, flags = info.flags)
+                                        BufferedPacket(isVideo = false, data = bytes, ptsUs = monoPts, flags = info.flags)
                                     )
                                     if (isStreamingActive.get()) {
-                                        val tsMs = (ptsUs / 1000L).toInt()
-                                        synchronized(rtmpLock) {
-                                            rtmpClients.forEach { client ->
-                                                runCatching { client.sendAudioFrame(bytes, tsMs) }
+                                        val tsMs = (monoPts / 1000L).toInt()
+                                        for ((id, client) in rtmpClients) {
+                                            val ok = client.sendAudioFrame(bytes, tsMs)
+                                            if (!ok) {
+                                                destinationHealth[id] = DestinationHealthState.RECONNECTING
                                             }
                                         }
                                     }
@@ -621,9 +745,7 @@ class HardwareEncoderPipeline(
             val pps = stripStartCode(ppsRaw)
             cachedSps = sps
             cachedPps = pps
-            synchronized(rtmpLock) {
-                rtmpClients.forEach { it.sendVideoConfig(sps, pps) }
-            }
+            rtmpClients.values.forEach { it.sendVideoConfig(sps, pps) }
         }
     }
 
@@ -640,9 +762,7 @@ class HardwareEncoderPipeline(
         if (sps != null && pps != null) {
             cachedSps = sps
             cachedPps = pps
-            synchronized(rtmpLock) {
-                rtmpClients.forEach { it.sendVideoConfig(sps, pps) }
-            }
+            rtmpClients.values.forEach { it.sendVideoConfig(sps, pps) }
         }
     }
 
@@ -731,6 +851,8 @@ class HardwareEncoderPipeline(
 
     fun stopAll() {
         isPipelineRunning.set(false)
+        watchdogJob?.cancel()
+        watchdogJob = null
         audioMixerEngine.onMixedPcmFrame = null
         renderJob?.cancel()
         videoDrainJob?.cancel()
@@ -750,10 +872,8 @@ class HardwareEncoderPipeline(
         runCatching { inputSurface?.release() }
         inputSurface = null
 
-        synchronized(rtmpLock) {
-            rtmpClients.forEach { it.close() }
-            rtmpClients.clear()
-        }
+        rtmpClients.values.forEach { it.close() }
+        rtmpClients.clear()
         replayBuffer.clear()
     }
 }
